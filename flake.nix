@@ -56,12 +56,15 @@
         packages = hsPkgs: [ hsPkgs.idunn ];
         withHoogle = true;
         buildInputs = with pkgs; [
+          ghciwatch
           haskellPackages.cabal-install
           haskellPackages.cabal-gild
           haskellPackages.ghc
           haskellPackages.haskell-language-server
           haskellPackages.hoogle
           haskellPackages.ormolu
+          just
+          mangohud
           skywalking-eyes
         ];
       };
