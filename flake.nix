@@ -67,6 +67,11 @@
               export CPATH="$(pwd)/cbits/include:$CPATH"
               exec ${pkgs.llvmPackages.clang-tools}/bin/clang-tidy --fix "$@"
             ''}";
+            skywalking-eyes = {
+              name = "SkyWalking Eyes";
+              enable = true;
+              entry = "${pkgs.skywalking-eyes}/bin/license-eye header fix";
+            };
             nixfmt.enable = true;
             ormolu.enable = true;
           };

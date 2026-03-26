@@ -5,14 +5,17 @@ header:
     copyright-year: 2026
 
   paths-ignore:
+    - '.clangd'
     - '.direnv'
     - '.envrc'
     - '.gitignore'
-    - 'dist-newstyle'
     - '.licenserc.yaml'
+    - 'dist-newstyle'
+    - 'idunn.cabal'
+    - 'Justfile'
+    - 'LICENSE'
     - '**/*.lock'
     - '**/*.md'
     - '**/*.nix'
-    - 'LICENSE'
 
   comment: on-failure
