@@ -1,0 +1,35 @@
+cabal-version: 3.8
+name: idunn
+version: 0.1.0
+build-type: Simple
+license: AGPL-3.0-or-later
+license-file: LICENSE
+
+source-repository head
+  type: git
+  location: https://github.com/aveltras/idunn
+
+library
+  default-language: GHC2024
+  hs-source-dirs: src
+  build-depends:
+    apecs,
+    base,
+    bytestring,
+    containers,
+    linear,
+    mtl,
+    reflex,
+    text,
+
+  exposed-modules:
+    Idunn
+
+executable demo
+  default-language: GHC2024
+  main-is: Main.hs
+  hs-source-dirs: demo
+  ghc-options: -threaded
+  build-depends:
+    base,
+    idunn,
