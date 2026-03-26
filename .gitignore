@@ -1,3 +1,6 @@
 /.direnv/
 /cabal.project.local
 /dist-newstyle/
+/.cache/
+/compile_commands.json
+/.pre-commit-config.yaml

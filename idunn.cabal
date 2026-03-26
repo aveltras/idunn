@@ -17,13 +17,29 @@ library
     base,
     bytestring,
     containers,
-    linear,
+    hs-bindgen,
+    hs-bindgen-runtime,
     mtl,
     reflex,
+    resourcet,
     text,
+    unliftio,
+
+  cxx-sources:
+    cbits/src/platform.cpp
+
+  include-dirs:
+    cbits/include
+
+  install-includes:
+    idunn/platform.h
 
   exposed-modules:
     Idunn
+
+  other-modules:
+    Idunn.Platform
+    Idunn.Platform.FFI
 
 executable demo
   default-language: GHC2024

@@ -17,5 +17,7 @@
 
 module Idunn where
 
+import Idunn.Platform
+
 run :: IO ()
-run = print "run"
+run = sayHello

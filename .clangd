@@ -1,0 +1,6 @@
+Completion:
+  HeaderInsertion: Never
+CompileFlags:
+  BuiltinHeaders: QueryDriver
+  Compiler: clang++
+  CompilationDatabase: .
