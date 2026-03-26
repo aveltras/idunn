@@ -7,8 +7,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nix-filter.url = "github:numtide/nix-filter";
     systems.url = "github:nix-systems/default";
-    treefmt-nix.url = "github:numtide/treefmt-nix";
-    treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -19,7 +17,6 @@
       nixpkgs,
       nix-filter,
       systems,
-      treefmt-nix,
       ...
     }@inputs:
     let
