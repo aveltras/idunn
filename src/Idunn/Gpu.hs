@@ -17,8 +17,11 @@
 
 module Idunn.Gpu where
 
+import Data.Text
+import Data.Text.Foreign (withCString)
 import Data.Void
 import Foreign
+import Foreign.C.ConstPtr
 import Idunn.Gpu.FFI
 import UnliftIO.Resource
 
@@ -26,10 +29,15 @@ data Gpu = Gpu
   { ptr :: Ptr Void
   }
 
-initGpu :: (MonadResource m) => m Gpu
-initGpu = snd <$> allocate up down
+initGpu :: (MonadResource m) => Text -> Word32 -> m Gpu
+initGpu appName version = snd <$> allocate up down
   where
-    up = alloca $ \pPlatform -> do
-      idunn_gpu_init pPlatform
-      Gpu <$> peek pPlatform
+    up =
+      alloca $ \pGpu ->
+        alloca $ \pConfig ->
+          withCString appName $ \c'appName -> do
+            let config = Idunn_gpu_config (ConstPtr c'appName) version
+            poke pConfig config
+            idunn_gpu_init pConfig pGpu
+            Gpu <$> peek pGpu
     down gpu = idunn_gpu_uninit gpu.ptr

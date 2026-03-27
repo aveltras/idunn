@@ -17,12 +17,19 @@
 
 module Idunn.Platform
   ( initPlatform,
+    initWindow,
+    render,
   )
 where
 
+import Data.Text
+import Data.Text.Foreign (withCString)
 import Data.Void
 import Foreign
+import Foreign.C.ConstPtr
+import Idunn.Gpu
 import Idunn.Platform.FFI
+import UnliftIO
 import UnliftIO.Resource
 
 data Platform = Platform
@@ -36,3 +43,22 @@ initPlatform = snd <$> allocate up down
       idunn_platform_init pPlatform
       Platform <$> peek pPlatform
     down platform = idunn_platform_uninit platform.ptr
+
+data Window = Window
+  { ptr :: Ptr Void
+  }
+
+initWindow :: (MonadResource m) => Platform -> Gpu -> Text -> Word32 -> Word32 -> m Window
+initWindow platform gpu title width height = snd <$> allocate up down
+  where
+    up = withCString title $ \c'title ->
+      alloca $ \pWindow ->
+        alloca $ \pConfig -> do
+          let config = Idunn_window_config platform.ptr gpu.ptr (ConstPtr c'title) width height
+          poke pConfig config
+          idunn_platform_window_init pConfig pWindow
+          Window <$> peek pWindow
+    down window = idunn_platform_window_uninit window.ptr
+
+render :: (MonadIO m) => Window -> m ()
+render window = liftIO $ idunn_platform_window_render window.ptr

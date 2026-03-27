@@ -17,6 +17,7 @@
 
 module Idunn where
 
+import Control.Monad (forever)
 import Idunn.Gpu
 import Idunn.Logger
 import Idunn.Platform
@@ -25,8 +26,10 @@ import UnliftIO.Resource
 run :: IO ()
 run = runResourceT $ do
   platform <- initPlatform
-  gpu <- initGpu
+  gpu <- initGpu "Idunn" 1
+  window <- initWindow platform gpu "Idunn" 800 600
   logDebug "debug"
   logInfo "info"
   logWarning "warning"
   logError "error"
+  forever $ render window

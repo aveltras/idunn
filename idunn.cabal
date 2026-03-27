@@ -14,6 +14,7 @@ common common
   default-extensions:
     DuplicateRecordFields
     OverloadedRecordDot
+    OverloadedStrings
 
   ghc-options:
     -Wall
@@ -46,7 +47,9 @@ library
   extra-libraries:
     SDL3
     stdc++
+    volk
 
+  cxx-options: -std=c++20
   cxx-sources:
     cbits/src/gpu.cpp
     cbits/src/logger.cpp

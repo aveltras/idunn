@@ -17,6 +17,10 @@
 
 #pragma once
 
+// NOLINTBEGIN
+
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,6 +28,20 @@ extern "C" {
 void idunn_platform_init(void **pPlatform);
 void idunn_platform_uninit(void *platform);
 
+typedef struct idunn_window_config {
+  void *platform;
+  void *gpu;
+  const char *title;
+  uint32_t width;
+  uint32_t height;
+} idunn_window_config;
+
+void idunn_platform_window_init(idunn_window_config *config, void **pWindow);
+void idunn_platform_window_uninit(void *window);
+void idunn_platform_window_render(void *window);
+
 #ifdef __cplusplus
 }
 #endif
+
+// NOLINTEND

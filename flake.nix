@@ -2,7 +2,7 @@
   inputs = {
     git-hooks.url = "github:cachix/git-hooks.nix";
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
-    hs-bindgen.url = "github:well-typed/hs-bindgen/7d864d7af43becc59a0935c6599ad9a3d20bd688";
+    hs-bindgen.url = "github:well-typed/hs-bindgen/2211bbc404b5fd0e7e7413809ee0dd6379825700";
     hs-bindgen.inputs.nixpkgs.follows = "nixpkgs";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nix-filter.url = "github:numtide/nix-filter";
@@ -31,15 +31,21 @@
             // {
               idunn =
                 let
-                  basePkg = hprev.callCabal2nix "idunn" (nix-filter {
-                    root = ./.;
-                    include = [
-                      "cbits"
-                      "demo"
-                      "src"
-                      "idunn.cabal"
-                    ];
-                  }) { SDL3 = final.sdl3; };
+                  basePkg =
+                    hprev.callCabal2nix "idunn"
+                      (nix-filter {
+                        root = ./.;
+                        include = [
+                          "cbits"
+                          "demo"
+                          "src"
+                          "idunn.cabal"
+                        ];
+                      })
+                      {
+                        SDL3 = final.sdl3;
+                        volk = final.vulkan-volk;
+                      };
                 in
                 prev.haskell.lib.compose.overrideCabal (drv: {
                   passthru = (drv.passthru or { }) // {
@@ -61,7 +67,7 @@
         ];
       };
 
-      inherit (self.checks.${system}.pre-commit-check) shellHook enabledPackages;
+      precommitCheck = self.checks.${system}.pre-commit-check;
 
       llvm = pkgs.llvmPackages_21;
 
@@ -102,13 +108,22 @@
         pkgs.writeShellScriptBin "pre-commit-run" script
       );
 
-      devShells.${system}.default = pkgs.haskellPackages.shellFor {
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (pkgs.haskellPackages.idunn.systemLibs or [ ]);
+      devShells.${system}.default = pkgs.haskellPackages.shellFor rec {
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath nativeBuildInputs;
         packages = hsPkgs: [ hsPkgs.idunn ];
         withHoogle = true;
+        nativeBuildInputs =
+          with pkgs;
+          [
+            vulkan-headers
+            vulkan-loader
+            vulkan-memory-allocator
+            vulkan-validation-layers
+          ]
+          ++ haskellPackages.idunn.systemLibs;
         buildInputs =
           with pkgs;
-          enabledPackages
+          precommitCheck.enabledPackages
           ++ [
             bear
             ghciwatch
@@ -124,9 +139,10 @@
             llvm.libstdcxxClang # https://discourse.nixos.org/t/get-clangd-to-find-standard-headers-in-nix-shell/11268/17
             mangohud
             skywalking-eyes
+            vulkan-tools
           ];
         shellHook = ''
-          ${shellHook}
+          ${precommitCheck.shellHook}
           export CPATH=$(pwd)/cbits/include:$CPATH
         '';
       };

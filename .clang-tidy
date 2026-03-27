@@ -3,4 +3,6 @@ Checks: >
   performance-*,
   modernize-*,
   readability-*,
-  clang-analyzer-*
+  clang-analyzer-*,
+  -readability-function-cognitive-complexity,
+  -bugprone-easily-swappable-parameters

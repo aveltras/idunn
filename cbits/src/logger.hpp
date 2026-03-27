@@ -34,7 +34,10 @@
 #endif
 #endif
 
-enum class LogLevel : std::uint8_t { Debug, Info, Warning, Error };
+enum class LogLevel : std::uint8_t { Debug,
+                                     Info,
+                                     Warning,
+                                     Error };
 
 #ifdef NDEBUG
 constexpr LogLevel MIN_LOG_LEVEL = LogLevel::Info;
@@ -44,7 +47,8 @@ constexpr LogLevel MIN_LOG_LEVEL = LogLevel::Debug;
 
 struct Logger {
 
-  template <LogLevel Level> static void log(const char *message) {
+  template <LogLevel Level>
+  static void log(const char *message) {
     if constexpr (Level >= MIN_LOG_LEVEL) {
       std::printf("%s[%s]%s %s\n", getColor(Level), getLevelName(Level),
                   "\033[0m", message);
@@ -87,19 +91,19 @@ struct Logger {
   }
 };
 
-#define IDUNN_LOG_INTERNAL(LevelNum, LevelEnum, fmt, ...)                      \
-  do {                                                                         \
-    if constexpr (LevelNum >= IDUNN_LOG_THRESHOLD) {                           \
-      Logger::log<LogLevel::LevelEnum>(fmt __VA_OPT__(, ) __VA_ARGS__);        \
-    }                                                                          \
+#define IDUNN_LOG_INTERNAL(LevelNum, LevelEnum, fmt, ...)               \
+  do {                                                                  \
+    if constexpr (LevelNum >= IDUNN_LOG_THRESHOLD) {                    \
+      Logger::log<LogLevel::LevelEnum>(fmt __VA_OPT__(, ) __VA_ARGS__); \
+    }                                                                   \
   } while (0)
 
-#define LOG_DEBUG(fmt, ...)                                                    \
+#define LOG_DEBUG(fmt, ...) \
   IDUNN_LOG_INTERNAL(IDUNN_LEVEL_DEBUG, Debug, fmt __VA_OPT__(, ) __VA_ARGS__)
-#define LOG_INFO(fmt, ...)                                                     \
+#define LOG_INFO(fmt, ...) \
   IDUNN_LOG_INTERNAL(IDUNN_LEVEL_INFO, Info, fmt __VA_OPT__(, ) __VA_ARGS__)
-#define LOG_WARNING(fmt, ...)                                                  \
-  IDUNN_LOG_INTERNAL(IDUNN_LEVEL_WARNING, Warning,                             \
+#define LOG_WARNING(fmt, ...)                      \
+  IDUNN_LOG_INTERNAL(IDUNN_LEVEL_WARNING, Warning, \
                      fmt __VA_OPT__(, ) __VA_ARGS__)
-#define LOG_ERROR(fmt, ...)                                                    \
+#define LOG_ERROR(fmt, ...) \
   IDUNN_LOG_INTERNAL(IDUNN_LEVEL_ERROR, Error, fmt __VA_OPT__(, ) __VA_ARGS__)

@@ -17,7 +17,26 @@
 
 #pragma once
 
+#include <idunn/platform.h>
+#include <SDL3/SDL_video.h>
+#include <memory>
+#include "gpu.hpp"
+
 struct Platform {
   explicit Platform();
   ~Platform();
+};
+
+struct Window {
+  explicit Window(idunn_window_config *config);
+  ~Window();
+  auto render() -> void;
+
+private:
+  Platform *platform;
+  Gpu *gpu;
+  uint32_t width;
+  uint32_t height;
+  std::unique_ptr<SDL_Window, void (*)(SDL_Window *)> window;
+  std::unique_ptr<Surface> surface;
 };

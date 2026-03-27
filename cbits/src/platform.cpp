@@ -15,12 +15,31 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <idunn/platform.h>
-
-#include "logger.hpp"
 #include "platform.hpp"
+#include "logger.hpp"
 
 #include <SDL3/SDL.h>
+#include <cassert>
+
+extern "C" {
+void idunn_platform_init(void **pPlatform) { *pPlatform = new Platform(); }
+
+void idunn_platform_uninit(void *platform) {
+  delete static_cast<Platform *>(platform);
+}
+
+void idunn_platform_window_init(idunn_window_config *config, void **pWindow) {
+  *pWindow = new Window(config);
+}
+
+void idunn_platform_window_uninit(void *window) {
+  delete static_cast<Window *>(window);
+}
+
+void idunn_platform_window_render(void *window) {
+  static_cast<Window *>(window)->render();
+}
+}
 
 Platform::Platform() {
   LOG_DEBUG("Platform");
@@ -32,10 +51,18 @@ Platform::~Platform() {
   LOG_DEBUG("~Platform");
 }
 
-extern "C" {
-void idunn_platform_init(void **pPlatform) { *pPlatform = new Platform(); }
-
-void idunn_platform_uninit(void *platform) {
-  delete static_cast<Platform *>(platform);
+Window::Window(idunn_window_config *config)
+    : width(config->width),
+      height(config->height),
+      window(SDL_CreateWindow(config->title, (int)width, (int)height, SDL_WINDOW_VULKAN), SDL_DestroyWindow),
+      surface(std::make_unique<Surface>(static_cast<Gpu *>(config->gpu), window.get(), config->width, config->height)) {
+  LOG_DEBUG("Window");
 }
+
+Window::~Window() {
+  LOG_DEBUG("~Window");
+}
+
+auto Window::render() -> void {
+  surface->draw(width, height, 1);
 }

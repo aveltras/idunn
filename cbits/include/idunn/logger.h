@@ -17,6 +17,8 @@
 
 #pragma once
 
+// NOLINTBEGIN
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,3 +31,5 @@ void idunn_log_error(const char *msg);
 #ifdef __cplusplus
 }
 #endif
+
+// NOLINTEND

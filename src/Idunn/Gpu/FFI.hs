@@ -28,6 +28,7 @@
 
 module Idunn.Gpu.FFI where
 
+import HsBindgen.Runtime.LibC
 import HsBindgen.TH
 
 let cfg :: Config
