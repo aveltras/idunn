@@ -36,6 +36,7 @@ library
     stdc++
 
   cxx-sources:
+    cbits/src/gpu.cpp
     cbits/src/logger.cpp
     cbits/src/platform.cpp
 
@@ -43,12 +44,16 @@ library
     cbits/include
 
   install-includes:
+    idunn/gpu.h
+    idunn/logger.h
     idunn/platform.h
 
   exposed-modules:
     Idunn
 
   other-modules:
+    Idunn.Gpu
+    Idunn.Gpu.FFI
     Idunn.Logger
     Idunn.Logger.FFI
     Idunn.Platform

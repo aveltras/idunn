@@ -15,18 +15,21 @@
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
 
-module Idunn where
+module Idunn.Gpu where
 
-import Idunn.Gpu
-import Idunn.Logger
-import Idunn.Platform
+import Data.Void
+import Foreign
+import Idunn.Gpu.FFI
 import UnliftIO.Resource
 
-run :: IO ()
-run = runResourceT $ do
-  platform <- initPlatform
-  gpu <- initGpu
-  logDebug "debug"
-  logInfo "info"
-  logWarning "warning"
-  logError "error"
+data Gpu = Gpu
+  { ptr :: Ptr Void
+  }
+
+initGpu :: (MonadResource m) => m Gpu
+initGpu = snd <$> allocate up down
+  where
+    up = alloca $ \pPlatform -> do
+      idunn_gpu_init pPlatform
+      Gpu <$> peek pPlatform
+    down gpu = idunn_gpu_uninit gpu.ptr

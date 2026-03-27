@@ -14,19 +14,25 @@
  You should have received a copy of the GNU Affero General Public License
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
+{-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UnboxedTuples #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -ddump-splices #-}
 
-module Idunn where
+module Idunn.Gpu.FFI where
 
-import Idunn.Gpu
-import Idunn.Logger
-import Idunn.Platform
-import UnliftIO.Resource
+import HsBindgen.TH
 
-run :: IO ()
-run = runResourceT $ do
-  platform <- initPlatform
-  gpu <- initGpu
-  logDebug "debug"
-  logInfo "info"
-  logWarning "warning"
-  logError "error"
+let cfg :: Config
+    cfg = def {clang = def {argsInner = ["-std=c23"]}}
+    cfgTH :: ConfigTH
+    cfgTH = def {categoryChoice = useUnsafeCategory}
+ in withHsBindgen cfg cfgTH $ do
+      hashInclude "idunn/gpu.h"
