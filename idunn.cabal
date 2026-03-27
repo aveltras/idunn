@@ -15,6 +15,18 @@ common common
     DuplicateRecordFields
     OverloadedRecordDot
 
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-deriving-strategies
+    -Wno-ambiguous-fields
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Werror
+
 library
   import: common
   hs-source-dirs: src
