@@ -29,15 +29,26 @@
             hfinal: hprev:
             prev.haskell.packageOverrides hfinal hprev
             // {
-              idunn = hprev.callCabal2nix "idunn" (nix-filter {
-                root = ./.;
-                include = [
-                  "cbits"
-                  "demo"
-                  "src"
-                  "idunn.cabal"
-                ];
-              }) { SDL3 = final.sdl3; };
+              idunn =
+                let
+                  basePkg = hprev.callCabal2nix "idunn" (nix-filter {
+                    root = ./.;
+                    include = [
+                      "cbits"
+                      "demo"
+                      "src"
+                      "idunn.cabal"
+                    ];
+                  }) { SDL3 = final.sdl3; };
+                in
+                prev.haskell.lib.compose.overrideCabal (drv: {
+                  passthru = (drv.passthru or { }) // {
+                    systemLibs =
+                      (drv.librarySystemDepends or [ ])
+                      ++ (drv.executableSystemDepends or [ ])
+                      ++ (drv.pkg-configDepends or [ ]);
+                  };
+                }) basePkg;
             };
         };
       };
@@ -92,6 +103,7 @@
       );
 
       devShells.${system}.default = pkgs.haskellPackages.shellFor {
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (pkgs.haskellPackages.idunn.systemLibs or [ ]);
         packages = hsPkgs: [ hsPkgs.idunn ];
         withHoogle = true;
         buildInputs =
@@ -111,7 +123,6 @@
             llvm.clang-tools
             llvm.libstdcxxClang # https://discourse.nixos.org/t/get-clangd-to-find-standard-headers-in-nix-shell/11268/17
             mangohud
-            sdl3
             skywalking-eyes
           ];
         shellHook = ''
