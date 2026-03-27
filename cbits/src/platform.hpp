@@ -17,13 +17,7 @@
 
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void idunn_platform_init(void **pPlatform);
-void idunn_platform_uninit(void *platform);
-
-#ifdef __cplusplus
-}
-#endif
+struct Platform {
+  explicit Platform();
+  ~Platform();
+};

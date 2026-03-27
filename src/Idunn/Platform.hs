@@ -16,11 +16,23 @@
 -}
 
 module Idunn.Platform
-  ( sayHello,
+  ( initPlatform,
   )
 where
 
+import Data.Void
+import Foreign
 import Idunn.Platform.FFI
+import UnliftIO.Resource
 
-sayHello :: IO ()
-sayHello = idunn_platform_say_hello
+data Platform = Platform
+  { ptr :: Ptr Void
+  }
+
+initPlatform :: (MonadResource m) => m Platform
+initPlatform = snd <$> allocate up down
+  where
+    up = alloca $ \pPlatform -> do
+      idunn_platform_init pPlatform
+      Platform <$> peek pPlatform
+    down platform = idunn_platform_uninit platform.ptr

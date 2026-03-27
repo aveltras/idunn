@@ -9,8 +9,14 @@ source-repository head
   type: git
   location: https://github.com/aveltras/idunn
 
-library
+common common
   default-language: GHC2024
+  default-extensions:
+    DuplicateRecordFields
+    OverloadedRecordDot
+
+library
+  import: common
   hs-source-dirs: src
   build-depends:
     apecs,
@@ -24,6 +30,10 @@ library
     resourcet,
     text,
     unliftio,
+
+  extra-libraries:
+    SDL3
+    stdc++
 
   cxx-sources:
     cbits/src/logger.cpp
@@ -45,7 +55,7 @@ library
     Idunn.Platform.FFI
 
 executable demo
-  default-language: GHC2024
+  import: common
   main-is: Main.hs
   hs-source-dirs: demo
   ghc-options: -threaded

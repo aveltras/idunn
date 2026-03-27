@@ -19,11 +19,12 @@ module Idunn where
 
 import Idunn.Logger
 import Idunn.Platform
+import UnliftIO.Resource
 
 run :: IO ()
-run = do
+run = runResourceT $ do
+  initPlatform
   logDebug "debug"
   logInfo "info"
   logWarning "warning"
   logError "error"
-  sayHello

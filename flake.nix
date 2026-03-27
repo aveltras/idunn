@@ -37,7 +37,7 @@
                   "src"
                   "idunn.cabal"
                 ];
-              }) { };
+              }) { SDL3 = final.sdl3; };
             };
         };
       };
@@ -111,6 +111,7 @@
             llvm.clang-tools
             llvm.libstdcxxClang # https://discourse.nixos.org/t/get-clangd-to-find-standard-headers-in-nix-shell/11268/17
             mangohud
+            sdl3
             skywalking-eyes
           ];
         shellHook = ''

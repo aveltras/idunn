@@ -17,8 +17,25 @@
 
 #include <idunn/platform.h>
 
-#include <cstdio>
+#include "logger.hpp"
+#include "platform.hpp"
+
+#include <SDL3/SDL.h>
+
+Platform::Platform() {
+  LOG_DEBUG("Platform");
+  SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+}
+
+Platform::~Platform() {
+  SDL_Quit();
+  LOG_DEBUG("~Platform");
+}
 
 extern "C" {
-void idunn_platform_say_hello() { printf("hello, world!\n"); }
+void idunn_platform_init(void **pPlatform) { *pPlatform = new Platform(); }
+
+void idunn_platform_uninit(void *platform) {
+  delete static_cast<Platform *>(platform);
+}
 }
