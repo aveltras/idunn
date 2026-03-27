@@ -14,16 +14,25 @@
  You should have received a copy of the GNU Affero General Public License
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
+{-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UnboxedTuples #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -ddump-splices #-}
 
-module Idunn where
+module Idunn.Logger.FFI where
 
-import Idunn.Logger
-import Idunn.Platform
+import HsBindgen.TH
 
-run :: IO ()
-run = do
-  logDebug "debug"
-  logInfo "info"
-  logWarning "warning"
-  logError "error"
-  sayHello
+let cfg :: Config
+    cfg = def {clang = def {argsInner = ["-std=c23"]}}
+    cfgTH :: ConfigTH
+    cfgTH = def {categoryChoice = useUnsafeCategory}
+ in withHsBindgen cfg cfgTH $ do
+      hashInclude "idunn/logger.h"

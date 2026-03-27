@@ -26,6 +26,7 @@ library
     unliftio,
 
   cxx-sources:
+    cbits/src/logger.cpp
     cbits/src/platform.cpp
 
   include-dirs:
@@ -38,6 +39,8 @@ library
     Idunn
 
   other-modules:
+    Idunn.Logger
+    Idunn.Logger.FFI
     Idunn.Platform
     Idunn.Platform.FFI
 
