@@ -17,7 +17,9 @@
 
 module Main where
 
+import Control.Monad.IO.Class (liftIO)
 import Idunn
+import Paths_idunn qualified as Cabal
 
 main :: IO ()
 main = run app
@@ -28,7 +30,10 @@ app = do
   performEvent_ $ ffor ePostBuild $ \_ -> logInfo "postBuild"
   eKey <- subscribe KeyE
   let eKeyPressed = ffilter ((==) True) eKey
-  performEvent_ $ ffor eKeyPressed $ \_ -> logInfo "Key 'E' Pressed "
+  performEvent_ $ ffor eKeyPressed $ \_ -> do
+    logInfo "Key 'E' Pressed "
+    soundPath <- liftIO $ Cabal.getDataFileName "demo/assets/freesound_community-wind-6352.mp3"
+    playSound soundPath
   eScancode <- subscribe ScancodeW
   let eScancodePressed = ffilter ((==) True) eScancode
   performEvent_ $ ffor eScancodePressed $ \_ -> logInfo "Scancode 'W' Pressed "

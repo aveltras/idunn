@@ -139,7 +139,7 @@
           ];
         shellHook = ''
           ${precommitCheck.shellHook}
-          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$(pwd)/vendor/SPIRV-Reflect:$(pwd)/vendor/Vulkan-Utility-Libraries/include:$CPATH"
+          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$(pwd)/vendor/SPIRV-Reflect:$(pwd)/vendor/Vulkan-Utility-Libraries/include:$(pwd)/vendor/miniaudio:$CPATH"
         '';
       };
     };

@@ -7,3 +7,6 @@
 [submodule "vendor/Vulkan-Utility-Libraries"]
 	path = vendor/Vulkan-Utility-Libraries
 	url = git@github.com:KhronosGroup/Vulkan-Utility-Libraries.git
+[submodule "vendor/miniaudio"]
+	path = vendor/miniaudio
+	url = git@github.com:mackron/miniaudio.git

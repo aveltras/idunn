@@ -5,6 +5,7 @@ build-type: Simple
 license: AGPL-3.0-or-later
 license-file: LICENSE
 data-files:
+  demo/assets/*
   shaders/*.slang
 
 source-repository head
@@ -53,8 +54,12 @@ library
     slang
     stdc++
 
+  c-sources:
+    vendor/miniaudio/miniaudio.c
+
   cxx-options: -std=c++20
   cxx-sources:
+    cbits/src/audio.cpp
     cbits/src/gpu.cpp
     cbits/src/logger.cpp
     cbits/src/platform.cpp
@@ -64,6 +69,7 @@ library
     cbits/include
     vendor/SPIRV-Reflect
     vendor/Vulkan-Utility-Libraries/include
+    vendor/miniaudio
     vendor/volk
 
   install-includes:
@@ -78,6 +84,8 @@ library
     Paths_idunn
 
   other-modules:
+    Idunn.Audio
+    Idunn.Audio.FFI
     Idunn.Gpu
     Idunn.Gpu.FFI
     Idunn.Logger
@@ -91,6 +99,7 @@ executable demo
   main-is: Main.hs
   hs-source-dirs: demo
   ghc-options: -threaded
+  other-modules: Paths_idunn
   build-depends:
     base,
     idunn,
