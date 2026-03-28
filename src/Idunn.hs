@@ -20,6 +20,7 @@ module Idunn
     module Idunn.Audio,
     module Idunn.Logger,
     module Idunn.Platform,
+    module Idunn.Physics,
     module Reflex,
   )
 where
@@ -33,6 +34,7 @@ import Data.Functor.Identity (Identity (..))
 import Idunn.Audio
 import Idunn.Gpu
 import Idunn.Logger
+import Idunn.Physics
 import Idunn.Platform
 import Reflex
 import Reflex.Host.Class
@@ -56,11 +58,15 @@ type App t m =
 data AppEnv t = AppEnv
   { platform :: Platform t,
     gpu :: Gpu,
-    audio :: Audio
+    audio :: Audio,
+    physics :: Physics
   }
 
 instance HasAudio (AppEnv t) where
   getAudio = audio
+
+instance HasPhysics (AppEnv t) where
+  getPhysics = physics
 
 instance HasPlatform t (AppEnv t) where
   getPlatform = platform
@@ -81,10 +87,11 @@ run app = runResourceT $ do
   platform <- initPlatform
   gpu <- initGpu "Idunn" 1
   audio <- initAudio
+  physics <- initPhysics
   window <- initWindow platform gpu "Idunn" 800 600
   liftIO $ runSpiderHost $ do
     (ePostBuild, trPostBuild) <- newEventWithTriggerRef
-    let appEnv :: AppEnv (SpiderTimeline Global) = AppEnv platform gpu audio
+    let appEnv :: AppEnv (SpiderTimeline Global) = AppEnv platform gpu audio physics
     (_, FireCommand fire) <- hostPerformEventT $ flip runPostBuildT ePostBuild $ runReaderT app appEnv
     addEvent platform.eventsRef trPostBuild ()
     fix $ \f -> do

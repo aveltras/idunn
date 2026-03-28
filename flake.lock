@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "JoltPhysics": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1766927235,
+        "narHash": "sha256-OQ3kqpd0NBKA0e/YRNCKaSR0wKIto1mcZ+X93CuJ+Dc=",
+        "owner": "jrouwe",
+        "repo": "JoltPhysics",
+        "rev": "23dadd0e603f1b321142d4c74df07fce85064989",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jrouwe",
+        "ref": "v5.5.0",
+        "repo": "JoltPhysics",
+        "type": "github"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -165,6 +182,7 @@
     },
     "root": {
       "inputs": {
+        "JoltPhysics": "JoltPhysics",
         "git-hooks": "git-hooks",
         "hs-bindgen": "hs-bindgen",
         "nix-filter": "nix-filter",

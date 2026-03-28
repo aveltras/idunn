@@ -4,6 +4,8 @@
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
     hs-bindgen.url = "github:well-typed/hs-bindgen/2211bbc404b5fd0e7e7413809ee0dd6379825700";
     hs-bindgen.inputs.nixpkgs.follows = "nixpkgs";
+    JoltPhysics.url = "github:jrouwe/JoltPhysics/v5.5.0";
+    JoltPhysics.flake = false;
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nix-filter.url = "github:numtide/nix-filter";
     systems.url = "github:nix-systems/default";
@@ -23,7 +25,7 @@
       system = "x86_64-linux";
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
 
-      haskellOverlay = final: prev: {
+      overlay = final: prev: {
         haskell = prev.haskell // {
           packageOverrides =
             hfinal: hprev:
@@ -56,13 +58,21 @@
                 }) basePkg;
             };
         };
+
+        JoltPhysics = prev.llvmPackages_21.stdenv.mkDerivation rec {
+          name = "JoltPhysics";
+          src = inputs.JoltPhysics;
+          nativeBuildInputs = with prev; [ cmake ];
+          cmakeDir = "../Build";
+          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Debug" ];
+        };
       };
 
       pkgs = import nixpkgs {
         inherit system;
         overlays = [
           hs-bindgen.overlays.default
-          haskellOverlay
+          overlay
         ];
       };
 
@@ -110,6 +120,7 @@
         nativeBuildInputs =
           with pkgs;
           [
+            JoltPhysics
             shader-slang
             vulkan-headers
             vulkan-loader
