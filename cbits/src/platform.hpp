@@ -18,13 +18,42 @@
 #pragma once
 
 #include <idunn/platform.h>
-#include <SDL3/SDL_video.h>
-#include <memory>
 #include "gpu.hpp"
 
+#include <SDL3/SDL.h>
+#include <array>
+#include <map>
+#include <memory>
+
+static constexpr uint32_t kMaxIndexBase = SDLK_PLUSMINUS;
+static constexpr uint32_t kMinIndexScancode = SDLK_CAPSLOCK & ~SDLK_SCANCODE_MASK;
+static constexpr uint32_t kMinIndexExtended = SDLK_LEFT_TAB & ~SDLK_EXTENDED_MASK;
+static constexpr uint32_t kSizeBase = kMaxIndexBase + 1;
+static constexpr uint32_t kSizeScancode = (SDLK_ENDCALL & ~SDLK_SCANCODE_MASK) - kMinIndexScancode + 1;
+static constexpr uint32_t kSizeExtended = (SDLK_RHYPER & ~SDLK_EXTENDED_MASK) - kMinIndexExtended + 1;
+static constexpr uint32_t kKeyNumEntries = kSizeBase + kSizeScancode + kSizeExtended;
+
 struct Platform {
-  explicit Platform();
+  explicit Platform(uint32_t *pEventCount, idunn_platform_event **ppEvent);
   ~Platform();
+  auto tick() -> void;
+  auto subscribe(Key key) -> void;
+  auto subscribe(Scancode scancode) -> void;
+  auto unsubscribe(Key key) -> void;
+  auto unsubscribe(Scancode scancode) -> void;
+
+private:
+  uint32_t *pEventCount;
+  idunn_platform_event **ppEvent;
+  std::vector<idunn_platform_event> tickEvents;
+  std::map<SDL_Keycode, Key> keys;
+  std::map<SDL_Scancode, Scancode> scancodes;
+
+  static constexpr auto getScancodeMapping() -> std::array<SDL_Scancode, SDL_SCANCODE_COUNT>;
+  [[nodiscard]] static auto mapScancode(Scancode scancode) noexcept -> SDL_Scancode;
+  static constexpr auto getKeyMapping() -> std::array<SDL_Keycode, kKeyNumEntries>;
+  [[nodiscard]] static constexpr auto getKeyMappingIndex(SDL_Keycode keycode) noexcept -> uint32_t;
+  [[nodiscard]] static auto mapKey(Key key) noexcept -> SDL_Keycode;
 };
 
 struct Window {

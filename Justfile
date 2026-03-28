@@ -4,6 +4,9 @@ build:
 clean:
     cabal v2-clean
 
+check:
+    pre-commit run -a
+
 compile-commands:
     bear -- clang++ -Wall -Wextra -std=c++20 -Icbits/include cbits/src/*.cpp -o test_engine_build -fsyntax-only -Wno-unused-command-line-argument
 

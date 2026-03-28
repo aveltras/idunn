@@ -20,4 +20,15 @@ module Main where
 import Idunn
 
 main :: IO ()
-main = run
+main = run app
+
+app :: (App t m) => m ()
+app = do
+  ePostBuild <- getPostBuild
+  performEvent_ $ ffor ePostBuild $ \_ -> logInfo "postBuild"
+  eKey <- subscribe KeyE
+  let eKeyPressed = ffilter ((==) True) eKey
+  performEvent_ $ ffor eKeyPressed $ \_ -> logInfo "Key 'E' Pressed "
+  eScancode <- subscribe ScancodeW
+  let eScancodePressed = ffilter ((==) True) eScancode
+  performEvent_ $ ffor eScancodePressed $ \_ -> logInfo "Scancode 'W' Pressed "
