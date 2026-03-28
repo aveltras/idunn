@@ -17,10 +17,13 @@
 
 module Idunn where
 
-import Control.Monad (forever)
+import Control.Monad.Fix (fix)
 import Idunn.Gpu
 import Idunn.Logger
 import Idunn.Platform
+import Reflex
+import Reflex.Host.Class
+import UnliftIO
 import UnliftIO.Resource
 
 run :: IO ()
@@ -32,4 +35,8 @@ run = runResourceT $ do
   logInfo "info"
   logWarning "warning"
   logError "error"
-  forever $ render window
+  liftIO $ runSpiderHost $ do
+    (_ePostBuild, _trPostBuild) <- newEventWithTriggerRef
+    fix $ \f -> do
+      render window
+      f

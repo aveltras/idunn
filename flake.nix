@@ -44,7 +44,6 @@
                       })
                       {
                         SDL3 = final.sdl3;
-                        volk = final.vulkan-volk;
                       };
                 in
                 prev.haskell.lib.compose.overrideCabal (drv: {
@@ -81,7 +80,7 @@
             clang-format.enable = true;
             clang-tidy.enable = true;
             clang-tidy.entry = "${pkgs.writeShellScript "clang-tidy-wrapper" ''
-              export CPATH="$(pwd)/cbits/include:$CPATH"
+              export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$CPATH"
               exec ${pkgs.llvmPackages.clang-tools}/bin/clang-tidy --fix "$@"
             ''}";
             skywalking-eyes = {
@@ -143,7 +142,7 @@
           ];
         shellHook = ''
           ${precommitCheck.shellHook}
-          export CPATH=$(pwd)/cbits/include:$CPATH
+          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$CPATH"
         '';
       };
     };

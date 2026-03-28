@@ -1,0 +1,3 @@
+[submodule "vendor/volk"]
+	path = vendor/volk
+	url = git@github.com:zeux/volk.git
