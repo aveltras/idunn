@@ -145,6 +145,7 @@
             llvm.clang-tools
             llvm.libstdcxxClang # https://discourse.nixos.org/t/get-clangd-to-find-standard-headers-in-nix-shell/11268/17
             mangohud
+            renderdoc
             skywalking-eyes
             vulkan-tools
           ];

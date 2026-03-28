@@ -15,3 +15,6 @@ run: build
 
 watch:
     ghciwatch --command "cabal v2-repl --ghc-options='-fobject-code' --enable-multi-repl idunn demo" --watch src --watch demo
+
+renderdoc: build
+    [ -f idunn.cap ] && qrenderdoc idunn.cap || qrenderdoc
