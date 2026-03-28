@@ -46,6 +46,7 @@
                       })
                       {
                         SDL3 = final.sdl3;
+                        Jolt = final.JoltPhysics;
                       };
                 in
                 prev.haskell.lib.compose.overrideCabal (drv: {
@@ -120,7 +121,6 @@
         nativeBuildInputs =
           with pkgs;
           [
-            JoltPhysics
             shader-slang
             vulkan-headers
             vulkan-loader
