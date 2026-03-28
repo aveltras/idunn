@@ -18,11 +18,13 @@
 module Idunn.Gpu where
 
 import Data.Text
-import Data.Text.Foreign (withCString)
+import Data.Text.Foreign qualified as T
 import Data.Void
 import Foreign
+import Foreign.C
 import Foreign.C.ConstPtr
 import Idunn.Gpu.FFI
+import Paths_idunn qualified as Cabal
 import UnliftIO.Resource
 
 data Gpu = Gpu
@@ -35,9 +37,11 @@ initGpu appName version = snd <$> allocate up down
     up =
       alloca $ \pGpu ->
         alloca $ \pConfig ->
-          withCString appName $ \c'appName -> do
-            let config = Idunn_gpu_config (ConstPtr c'appName) version
-            poke pConfig config
-            idunn_gpu_init pConfig pGpu
-            Gpu <$> peek pGpu
+          T.withCString appName $ \c'appName -> do
+            shadersPath <- Cabal.getDataFileName "shaders"
+            withCString shadersPath $ \c'shadersPath -> do
+              let config = Idunn_gpu_config (ConstPtr c'appName) version (ConstPtr c'shadersPath)
+              poke pConfig config
+              idunn_gpu_init pConfig pGpu
+              Gpu <$> peek pGpu
     down gpu = idunn_gpu_uninit gpu.ptr

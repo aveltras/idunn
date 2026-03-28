@@ -687,7 +687,7 @@ Window::Window(idunn_window_config *config)
     : width(config->width),
       height(config->height),
       window(SDL_CreateWindow(config->title, (int)width, (int)height, SDL_WINDOW_VULKAN), SDL_DestroyWindow),
-      surface(std::make_unique<Surface>(static_cast<Gpu *>(config->gpu), window.get(), config->width, config->height)) {
+      surface(std::make_unique<Gpu::Surface>(static_cast<Gpu *>(config->gpu), window.get(), config->width, config->height)) {
   LOG_DEBUG("Window");
 }
 
@@ -696,5 +696,5 @@ Window::~Window() {
 }
 
 auto Window::render() -> void {
-  surface->draw(width, height, 1);
+  surface->draw(width, height, 0);
 }

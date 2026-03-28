@@ -5,4 +5,5 @@ Checks: >
   readability-*,
   clang-analyzer-*,
   -readability-function-cognitive-complexity,
+  -readability-magic-numbers,
   -bugprone-easily-swappable-parameters

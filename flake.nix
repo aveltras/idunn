@@ -79,10 +79,6 @@
             cabal-gild.enable = true;
             clang-format.enable = true;
             clang-tidy.enable = true;
-            clang-tidy.entry = "${pkgs.writeShellScript "clang-tidy-wrapper" ''
-              export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$CPATH"
-              exec ${pkgs.llvmPackages.clang-tools}/bin/clang-tidy --fix "$@"
-            ''}";
             skywalking-eyes = {
               name = "SkyWalking Eyes";
               enable = true;
@@ -114,6 +110,7 @@
         nativeBuildInputs =
           with pkgs;
           [
+            shader-slang
             vulkan-headers
             vulkan-loader
             vulkan-memory-allocator
@@ -142,7 +139,7 @@
           ];
         shellHook = ''
           ${precommitCheck.shellHook}
-          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$CPATH"
+          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$(pwd)/vendor/SPIRV-Reflect:$(pwd)/vendor/Vulkan-Utility-Libraries/include:$CPATH"
         '';
       };
     };

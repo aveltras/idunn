@@ -1,3 +1,9 @@
 [submodule "vendor/volk"]
 	path = vendor/volk
 	url = git@github.com:zeux/volk.git
+[submodule "vendor/SPIRV-Reflect"]
+	path = vendor/SPIRV-Reflect
+	url = git@github.com:KhronosGroup/SPIRV-Reflect.git
+[submodule "vendor/Vulkan-Utility-Libraries"]
+	path = vendor/Vulkan-Utility-Libraries
+	url = git@github.com:KhronosGroup/Vulkan-Utility-Libraries.git

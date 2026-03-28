@@ -28,6 +28,7 @@ extern "C" {
 typedef struct idunn_gpu_config {
   const char *appName;
   uint32_t version;
+  const char *shadersPath;
 } idunn_gpu_config;
 
 void idunn_gpu_init(idunn_gpu_config *config, void **pGpu);

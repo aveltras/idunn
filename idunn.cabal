@@ -4,6 +4,8 @@ version: 0.1.0
 build-type: Simple
 license: AGPL-3.0-or-later
 license-file: LICENSE
+data-files:
+  shaders/*.slang
 
 source-repository head
   type: git
@@ -48,6 +50,7 @@ library
 
   extra-libraries:
     SDL3
+    slang
     stdc++
 
   cxx-options: -std=c++20
@@ -55,10 +58,13 @@ library
     cbits/src/gpu.cpp
     cbits/src/logger.cpp
     cbits/src/platform.cpp
+    vendor/SPIRV-Reflect/spirv_reflect.cpp
 
   include-dirs:
     cbits/include
-    vendor/volk/
+    vendor/SPIRV-Reflect
+    vendor/Vulkan-Utility-Libraries/include
+    vendor/volk
 
   install-includes:
     idunn/gpu.h
@@ -68,6 +74,9 @@ library
   exposed-modules:
     Idunn
 
+  autogen-modules:
+    Paths_idunn
+
   other-modules:
     Idunn.Gpu
     Idunn.Gpu.FFI
@@ -75,6 +84,7 @@ library
     Idunn.Logger.FFI
     Idunn.Platform
     Idunn.Platform.FFI
+    Paths_idunn
 
 executable demo
   import: common
