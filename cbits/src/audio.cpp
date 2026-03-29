@@ -34,7 +34,7 @@ void idunn_audio_sound_play(void *audio, const char *soundPath) {
 }
 }
 
-Audio::Audio() {
+Audio::Audio() : miniaudio(new ma_engine) {
   LOG_DEBUG("Audio");
   ma_result result = ma_engine_init(nullptr, miniaudio);
   assert(result == MA_SUCCESS);

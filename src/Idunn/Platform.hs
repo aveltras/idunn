@@ -587,6 +587,8 @@ initPlatform = snd <$> allocate up down
               scancodeSubscribers = scancodeSubscribers
             }
     down platform = do
+      writeIORef platform.keySubscribers mempty
+      writeIORef platform.scancodeSubscribers mempty
       idunn_platform_uninit platform.ptr
       free platform.ptrEventCount
       free platform.ptrEventsPtr
@@ -631,8 +633,8 @@ initWindow platform gpu title width height = snd <$> allocate up down
           Window <$> peek pWindow
     down window = idunn_platform_window_uninit window.ptr
 
-render :: (MonadIO m) => Window -> m ()
-render window = liftIO $ idunn_platform_window_render window.ptr
+render :: (MonadIO m) => Window -> GpuWorld vertex -> m ()
+render window world = liftIO $ idunn_platform_window_render window.ptr world.handle
 
 type Subscriptions t a = IORef (Map a (IntMap (EventTrigger t (Value a))))
 

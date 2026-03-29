@@ -15,8 +15,15 @@
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
 
-module Idunn.Gpu where
+module Idunn.Gpu
+  ( Gpu (..),
+    GpuWorld (..),
+    initGpu,
+    initGpuWorld,
+  )
+where
 
+import Data.Kind (Type)
 import Data.Text
 import Data.Text.Foreign qualified as T
 import Data.Void
@@ -24,6 +31,8 @@ import Foreign
 import Foreign.C
 import Foreign.C.ConstPtr
 import Idunn.Gpu.FFI
+import Idunn.Linear.Mat (Mat4x4)
+import Idunn.Vector
 import Paths_idunn qualified as Cabal
 import UnliftIO.Resource
 
@@ -45,3 +54,48 @@ initGpu appName version = snd <$> allocate up down
               idunn_gpu_init pConfig pGpu
               Gpu <$> peek pGpu
     down gpu = idunn_gpu_uninit gpu.ptr
+
+data GpuWorld (vertex :: Type) = GpuWorld
+  { handle :: Word64,
+    vertices :: PinnedVector vertex,
+    indices :: PinnedVector Word32,
+    meshes :: PinnedVector Idunn_gpu_mesh,
+    transforms :: PinnedVector Mat4x4,
+    configPtr :: Ptr Idunn_gpu_world_config
+  }
+
+initGpuWorld :: forall vertex m. (MonadResource m) => Gpu -> PinnedVector vertex -> PinnedVector Word32 -> PinnedVector Idunn_gpu_mesh -> PinnedVector Mat4x4 -> m (GpuWorld vertex)
+initGpuWorld gpu vertices indices meshes transforms = snd <$> allocate up down
+  where
+    up = alloca $ \pGpuWorld -> do
+      configPtr <- malloc
+      vertexCount <- peek vertices.sizePtr
+      indexCount <- peek indices.sizePtr
+      meshCount <- peek meshes.sizePtr
+      poke configPtr $
+        Idunn_gpu_world_config
+          { idunn_gpu_world_config_vertexSize = fromIntegral vertices.itemSize,
+            idunn_gpu_world_config_vertexCount = vertexCount,
+            idunn_gpu_world_config_vertexData = castPtr @vertex @Void $ dataPtr vertices,
+            idunn_gpu_world_config_indexSize = fromIntegral $ sizeOf @Word32 undefined,
+            idunn_gpu_world_config_indexCount = indexCount,
+            idunn_gpu_world_config_indexData = dataPtr indices,
+            idunn_gpu_world_config_meshCount = meshCount,
+            idunn_gpu_world_config_meshData = dataPtr meshes,
+            idunn_gpu_world_config_transformData = castPtr $ dataPtr transforms
+          }
+      idunn_gpu_world_init gpu.ptr configPtr pGpuWorld
+      handle <- peek pGpuWorld
+      pure $
+        GpuWorld
+          { handle = handle,
+            vertices = vertices,
+            indices = indices,
+            meshes = meshes,
+            transforms = transforms,
+            configPtr = configPtr
+          }
+
+    down world = do
+      free world.configPtr
+      idunn_gpu_world_uninit gpu.ptr world.handle

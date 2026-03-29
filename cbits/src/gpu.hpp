@@ -26,6 +26,7 @@
 #include <vector>
 #include <slang.h>
 #include <slang-com-ptr.h>
+#include <glm/mat4x4.hpp>
 
 #include "flags.hpp"
 #include "pool.hpp"
@@ -171,12 +172,15 @@ struct Gpu {
   };
 
   struct Surface {
-    explicit Surface(Gpu *gpu, SDL_Window *window, uint32_t width, uint32_t height);
-    ~Surface();
-    auto draw(uint32_t width, uint32_t height, float clearColor) -> void;
+    friend Gpu;
+
+    struct Desc {
+      SDL_Window *window;
+      uint32_t width;
+      uint32_t height;
+    };
 
   private:
-    Gpu *gpu;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkExtent2D extent;
@@ -185,15 +189,40 @@ struct Gpu {
     std::vector<VkImageView> imageViews;
     std::vector<VkSemaphore> readyForRender;
     std::vector<VkSemaphore> readyForPresent;
-
-    auto initSwapchain(uint32_t width, uint32_t height) -> void;
-    auto cleanupSwapchainResources() -> void;
   };
 
   struct Task {
     explicit Task(std::packaged_task<void()> &&task, VkFence fence) : task(std::move(task)), fence(fence) {}
     std::packaged_task<void()> task;
     VkFence fence;
+  };
+
+  struct Draw {
+    uint32_t transformIdx;
+  };
+
+  using Mesh = idunn_gpu_mesh;
+
+  struct World {
+    friend Gpu;
+
+    using Desc = idunn_gpu_world_config;
+
+    struct PushConstants {
+      glm::mat4 proj;
+      uint64_t drawBuffer;
+      uint64_t transformBuffer;
+      uint64_t vertexBuffer;
+    };
+
+  private:
+    Desc *description;
+    Handle<Buffer> vertexBuffer;
+    Handle<Buffer> indexBuffer;
+    Handle<Buffer> indirectBuffer;
+    Handle<Buffer> transformBuffer;
+    Handle<Buffer> drawBuffer;
+    Handle<Pipeline> pipeline;
   };
 
   explicit Gpu(idunn_gpu_config *config);
@@ -218,6 +247,16 @@ struct Gpu {
   auto destroy(Handle<Texture> texture) -> void;
   auto destroy(Texture &texture) -> void;
 
+  auto create(World::Desc *description) -> Handle<World>;
+  auto destroy(Handle<World> world) -> void;
+  auto destroy(World &world) -> void;
+
+  auto create(Surface::Desc &description) -> Handle<Surface>;
+  auto destroy(Handle<Surface> surface) -> void;
+  auto destroy(Surface &surface) -> void;
+
+  auto render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::mat4 projection, uint32_t width, uint32_t height, float clearColor) -> void;
+
 private:
   VkInstance instance;
   VkAllocationCallbacks *allocationCallbacks = nullptr;
@@ -236,7 +275,9 @@ private:
   Pool<Buffer> buffers;
   Pool<Pipeline> pipelines;
   Pool<Sampler> samplers;
+  Pool<Surface> surfaces;
   Pool<Texture> textures;
+  Pool<World> worlds;
   Handle<Sampler> defaultSampler;
   Handle<Texture> defaultTexture;
   std::vector<Task> tasks;
@@ -261,6 +302,9 @@ private:
   auto defer(std::packaged_task<void()> &&task) -> void;
   auto processReadyTasks() -> void;
   auto processAllTasks() -> void;
+  auto submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordCommands) const -> void;
+  auto initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> void;
+  auto cleanupSwapchainResources(Surface &surface) -> void;
 
 #ifndef NDEBUG
   static auto debugMessengerCallback(

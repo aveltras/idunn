@@ -59,7 +59,7 @@ private:
 struct Window {
   explicit Window(idunn_window_config *config);
   ~Window();
-  auto render() -> void;
+  auto render(Handle<Gpu::World> world) -> void;
 
 private:
   Platform *platform;
@@ -67,5 +67,5 @@ private:
   uint32_t width;
   uint32_t height;
   std::unique_ptr<SDL_Window, void (*)(SDL_Window *)> window;
-  std::unique_ptr<Gpu::Surface> surface;
+  Handle<Gpu::Surface> surface;
 };

@@ -17,9 +17,13 @@
 
 #include "platform.hpp"
 #include "logger.hpp"
+#include "pool.hpp"
 
 #include <SDL3/SDL.h>
 #include <cassert>
+#include <glm/glm.hpp>
+#include <glm/matrix.hpp>
+#include <glm/ext.hpp>
 
 extern "C" {
 void idunn_platform_init(idunn_platform_config *config, void **pPlatform) {
@@ -58,8 +62,8 @@ void idunn_platform_window_uninit(void *window) {
   delete static_cast<Window *>(window);
 }
 
-void idunn_platform_window_render(void *window) {
-  static_cast<Window *>(window)->render();
+void idunn_platform_window_render(void *window, uint64_t gpuWorld) {
+  static_cast<Window *>(window)->render(Handle<Gpu::World>(gpuWorld));
 }
 }
 
@@ -684,17 +688,25 @@ auto Platform::mapKey(Key keycode) noexcept -> SDL_Keycode {
 }
 
 Window::Window(idunn_window_config *config)
-    : width(config->width),
+    : platform(static_cast<Platform *>(config->platform)),
+      gpu(static_cast<Gpu *>(config->gpu)),
+      width(config->width),
       height(config->height),
-      window(SDL_CreateWindow(config->title, (int)width, (int)height, SDL_WINDOW_VULKAN), SDL_DestroyWindow),
-      surface(std::make_unique<Gpu::Surface>(static_cast<Gpu *>(config->gpu), window.get(), config->width, config->height)) {
+      window(SDL_CreateWindow(config->title, (int)width, (int)height, SDL_WINDOW_VULKAN), SDL_DestroyWindow) {
   LOG_DEBUG("Window");
+  Gpu::Surface::Desc surfaceDesc{};
+  surfaceDesc.window = window.get();
+  surfaceDesc.width = config->width;
+  surfaceDesc.height = config->height;
+  surface = gpu->create(surfaceDesc);
 }
 
 Window::~Window() {
   LOG_DEBUG("~Window");
 }
 
-auto Window::render() -> void {
-  surface->draw(width, height, 0);
+auto Window::render(Handle<Gpu::World> world) -> void {
+  auto projection = glm::perspective(glm::radians(60.0F), static_cast<float>(width) / static_cast<float>(height), 0.1F, 10.0F);
+  projection *= glm::lookAt(glm::vec3(0.0F, 0.0F, 5.0F), glm::vec3(0.0F, 0.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  gpu->render(surface, world, projection, width, height, 0);
 }

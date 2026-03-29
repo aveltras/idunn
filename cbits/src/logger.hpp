@@ -73,6 +73,7 @@ struct Logger {
     case LogLevel::Info:
       return "INFO";
     case LogLevel::Debug:
+    default:
       return "DEBUG";
     }
   }
@@ -86,6 +87,7 @@ struct Logger {
     case LogLevel::Info:
       return "\033[32m";
     case LogLevel::Debug:
+    default:
       return "\033[36m";
     }
   }

@@ -36,6 +36,7 @@ import Idunn.Gpu
 import Idunn.Logger
 import Idunn.Physics
 import Idunn.Platform
+import Idunn.World
 import Reflex
 import Reflex.Host.Class
 import UnliftIO
@@ -89,6 +90,7 @@ run app = runResourceT $ do
   audio <- initAudio
   physics <- initPhysics
   window <- initWindow platform gpu "Idunn" 800 600
+  world <- newWorld gpu
   liftIO $ runSpiderHost $ do
     (ePostBuild, trPostBuild) <- newEventWithTriggerRef
     let appEnv :: AppEnv (SpiderTimeline Global) = AppEnv platform gpu audio physics
@@ -99,7 +101,7 @@ run app = runResourceT $ do
       unless shouldExit $ do
         events <- readIORef platform.eventsRef
         _ <- fire events $ pure ()
-        render window
+        render window world.gpu
         writeIORef platform.eventsRef mempty
         f
   where

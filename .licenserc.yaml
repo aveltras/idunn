@@ -23,3 +23,9 @@ header:
     - '**/*.nix'
 
   comment: on-failure
+
+  language:
+    Slang:
+      extensions:
+        - ".slang"
+      comment_style_id: SlashAsterisk

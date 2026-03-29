@@ -12,6 +12,11 @@ source-repository head
   type: git
   location: https://github.com/aveltras/idunn
 
+flag asan
+  default: False
+  description: Enable Address Sanitizer
+  manual: True
+
 common common
   default-language: GHC2024
   default-extensions:
@@ -29,7 +34,6 @@ common common
     -Wno-ambiguous-fields
     -Wpartial-fields
     -Wredundant-constraints
-    -Werror
 
 library
   import: common
@@ -52,8 +56,13 @@ library
   extra-libraries:
     Jolt
     SDL3
+    glm
     slang
     stdc++
+
+  ghc-options:
+    -g3
+    -fno-ignore-asserts
 
   cc-options:
     -g
@@ -100,13 +109,21 @@ library
     Idunn.Audio.FFI
     Idunn.Gpu
     Idunn.Gpu.FFI
+    Idunn.Linear.Mat
+    Idunn.Linear.Vec
     Idunn.Logger
     Idunn.Logger.FFI
     Idunn.Physics
     Idunn.Physics.FFI
     Idunn.Platform
     Idunn.Platform.FFI
+    Idunn.Vector
+    Idunn.World
     Paths_idunn
+
+  if flag(asan)
+    ld-options: -fsanitize=address
+    cxx-options: -fsanitize=address
 
 executable demo
   import: common

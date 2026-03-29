@@ -581,7 +581,7 @@ typedef struct idunn_window_config {
 
 void idunn_platform_window_init(idunn_window_config *config, void **pWindow);
 void idunn_platform_window_uninit(void *window);
-void idunn_platform_window_render(void *window);
+void idunn_platform_window_render(void *window, uint64_t gpuWorld);
 
 #ifdef __cplusplus
 }

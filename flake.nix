@@ -60,12 +60,21 @@
             };
         };
 
+        glm = prev.glm.overrideAttrs (
+          finalAttrs: prevAttrs: {
+            cmakeFlags = prevAttrs.cmakeFlags ++ [ "-DBUILD_SHARED_LIBS=ON" ];
+          }
+        );
+
         JoltPhysics = prev.llvmPackages_21.stdenv.mkDerivation rec {
           name = "JoltPhysics";
           src = inputs.JoltPhysics;
           nativeBuildInputs = with prev; [ cmake ];
           cmakeDir = "../Build";
-          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Debug" ];
+          cmakeFlags = [
+            "-DCMAKE_BUILD_TYPE=Debug"
+            "-DBUILD_SHARED_LIBS=ON"
+          ];
         };
       };
 
@@ -81,6 +90,12 @@
 
       llvm = pkgs.llvmPackages_21;
 
+      # https://github.com/google/sanitizers/wiki/AddressSanitizerLeakSanitizer
+      asanSuppress = pkgs.writeText "asan_suppress.txt" ''
+        leak:fontconfig
+        leak:libasan.so
+      '';
+
     in
     {
       checks = forEachSystem (system: {
@@ -93,7 +108,7 @@
             skywalking-eyes = {
               name = "SkyWalking Eyes";
               enable = true;
-              entry = "${pkgs.skywalking-eyes}/bin/license-eye header fix";
+              entry = "${pkgs.skywalking-eyes}/bin/license-eye -v error header fix";
             };
             nixfmt.enable = true;
             ormolu.enable = true;
@@ -152,6 +167,7 @@
         shellHook = ''
           ${precommitCheck.shellHook}
           export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$(pwd)/vendor/SPIRV-Reflect:$(pwd)/vendor/Vulkan-Utility-Libraries/include:$(pwd)/vendor/miniaudio:$CPATH"
+          export LSAN_OPTIONS="report_objects=1:suppressions=${asanSuppress}"
         '';
       };
     };

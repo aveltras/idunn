@@ -28,10 +28,28 @@
 #include <spirv_reflect.h>
 #include <vulkan/utility/vk_format_utils.h>
 #include <vulkan/vk_enum_string_helper.h>
+#include <glm/glm.hpp>
+#include <glm/vec4.hpp>
+#include <glm/matrix.hpp>
+#include <glm/ext.hpp>
+#include <utility>
 
 extern "C" {
-void idunn_gpu_init(idunn_gpu_config *config, void **pGpu) { *pGpu = new Gpu(config); }
-void idunn_gpu_uninit(void *gpu) { delete static_cast<Gpu *>(gpu); }
+void idunn_gpu_init(idunn_gpu_config *config, void **pGpu) {
+  *pGpu = new Gpu(config);
+}
+
+void idunn_gpu_uninit(void *gpu) {
+  delete static_cast<Gpu *>(gpu);
+}
+
+void idunn_gpu_world_init(void *gpu, idunn_gpu_world_config *config, uint64_t *pWorldHandle) {
+  *pWorldHandle = static_cast<Gpu *>(gpu)->create(config).raw();
+}
+
+void idunn_gpu_world_uninit(void *gpu, uint64_t worldHandle) {
+  static_cast<Gpu *>(gpu)->destroy(Handle<Gpu::World>(worldHandle));
+}
 }
 
 #define VK_CHECK(func)                     \
@@ -53,7 +71,9 @@ Gpu::Gpu(idunn_gpu_config *config)
     : buffers(kMaxBindlessResources, [this](Buffer &buffer) -> void { destroy(buffer); }),
       pipelines(kMaxBindlessResources, [this](Pipeline &pipeline) -> void { destroy(pipeline); }),
       samplers(kMaxBindlessResources, [this](Sampler &sampler) -> void { destroy(sampler); }),
-      textures(kMaxBindlessResources, [this](Texture &texture) -> void { destroy(texture); }) {
+      surfaces(1, [this](Surface &surface) -> void { destroy(surface); }),
+      textures(kMaxBindlessResources, [this](Texture &texture) -> void { destroy(texture); }),
+      worlds(2, [this](World &world) -> void { destroy(world); }) {
   LOG_DEBUG("Gpu");
 
   VK_CHECK(volkInitialize());
@@ -172,6 +192,7 @@ Gpu::~Gpu() {
   pipelines.clear();
   samplers.clear();
   textures.clear();
+  surfaces.clear();
   processAllTasks();
   for (auto &frameFence : frameFences) {
     vkDestroyFence(device, frameFence, allocationCallbacks);
@@ -679,7 +700,7 @@ auto Gpu::create(Buffer &buffer, size_t size) -> Handle<Buffer> {
   VkBufferCreateInfo bufferCreateInfo = {};
   bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferCreateInfo.flags = 0;
-  bufferCreateInfo.size = size;
+  bufferCreateInfo.size = std::max<VkDeviceSize>(size, 1024);
   bufferCreateInfo.usage = buffer.usageFlags;
   bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   bufferCreateInfo.queueFamilyIndexCount = 0;
@@ -1487,178 +1508,135 @@ auto Gpu::destroy(Texture &texture) -> void {
   }));
 }
 
-Gpu::Surface::Surface(Gpu *gpu, SDL_Window *window, uint32_t width, uint32_t height) : gpu(gpu) {
-  LOG_DEBUG("Surface");
-  bool surfaceOk = SDL_Vulkan_CreateSurface(window, gpu->instance, gpu->allocationCallbacks, &surface);
-  assert(surfaceOk && "SDL failed creating surface");
-  assert(surface != VK_NULL_HANDLE);
-  initSwapchain(width, height);
-}
+auto Gpu::create(World::Desc *description) -> Handle<World> {
+  Buffer::Desc vertexBufferDesc = {};
+  vertexBufferDesc.usage = Buffer::Usage::Vertex;
+  vertexBufferDesc.size = description->vertexCount * description->vertexSize;
 
-Gpu::Surface::~Surface() {
-  vkDeviceWaitIdle(gpu->device);
-  cleanupSwapchainResources();
-  vkDestroySwapchainKHR(gpu->device, swapchain, gpu->allocationCallbacks);
-  vkDestroySurfaceKHR(gpu->instance, surface, gpu->allocationCallbacks);
-  LOG_DEBUG("~Surface");
-};
+  Buffer::Desc indexBufferDesc = {};
+  indexBufferDesc.usage = Buffer::Usage::Index;
+  indexBufferDesc.size = description->indexCount * description->indexSize;
 
-auto Gpu::Surface::initSwapchain(uint32_t width, uint32_t height) -> void {
-  if (swapchain != VK_NULL_HANDLE) {
-    cleanupSwapchainResources();
-  }
+  Buffer::Desc indirectBufferDesc = {};
+  indirectBufferDesc.usage = Buffer::Usage::Indirect;
+  indirectBufferDesc.size = description->meshCount * sizeof(VkDrawIndexedIndirectCommand);
 
-  VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
-  VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu->physicalDevice, surface, &surfaceCapabilities));
+  Buffer::Desc transformBufferDesc = {};
+  transformBufferDesc.usage = Buffer::Usage::Storage;
+  transformBufferDesc.size = description->meshCount * sizeof(glm::mat4);
 
-  uint32_t surfaceFormatCount = 0;
-  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(gpu->physicalDevice, surface, &surfaceFormatCount, nullptr));
-  std::vector<VkSurfaceFormatKHR> availableSurfaceFormats(surfaceFormatCount);
-  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(gpu->physicalDevice, surface, &surfaceFormatCount, availableSurfaceFormats.data()));
+  Buffer::Desc drawBufferDesc = {};
+  drawBufferDesc.usage = Buffer::Usage::Storage;
+  drawBufferDesc.size = description->meshCount * sizeof(Draw);
 
-  format = availableSurfaceFormats[0];
-  for (uint32_t i = 0; i < surfaceFormatCount; i++) {
-    if (availableSurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB && availableSurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-      format = availableSurfaceFormats[i];
-      break;
-    }
-  }
+  Pipeline::Desc pipelineDesc = {};
+  pipelineDesc.shader = "basic";
+  pipelineDesc.colorAttachmentFormat = VK_FORMAT_B8G8R8A8_SRGB;
+  pipelineDesc.windingOrder = Pipeline::WindingOrder::CounterClockwise;
 
-  VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
-  // uint32_t presentModeCount = 0;
-  // VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(gpu.>physicalDevice, surface, &presentModeCount, NULL));
-  // std::vector<VkPresentModeKHR> availablePresentModes(presentModeCount);
-  // VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(gpu.>physicalDevice, surface, &presentModeCount, availablePresentModes.data()));
-
-  // for (uint32_t i = 0; i < presentModeCount; i++) {
-  //   if (availablePresentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-  //     presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-  //     break;
-  //   }
-  // }
-
-  extent.width = std::max(std::min(width, surfaceCapabilities.maxImageExtent.width), surfaceCapabilities.minImageExtent.width);
-  extent.height = std::max(std::min(height, surfaceCapabilities.maxImageExtent.height), surfaceCapabilities.minImageExtent.height);
-
-  uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
-  if (surfaceCapabilities.maxImageCount > 0 && imageCount > surfaceCapabilities.maxImageCount) {
-    imageCount = surfaceCapabilities.maxImageCount;
-  }
-
-  VkSwapchainCreateInfoKHR swapchainCreateInfo = {};
-  swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-  swapchainCreateInfo.surface = surface;
-  swapchainCreateInfo.minImageCount = imageCount;
-  swapchainCreateInfo.imageFormat = format.format;
-  swapchainCreateInfo.imageColorSpace = format.colorSpace;
-  swapchainCreateInfo.imageExtent = extent;
-  swapchainCreateInfo.imageArrayLayers = 1;
-  swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-  swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  swapchainCreateInfo.preTransform = surfaceCapabilities.currentTransform;
-  swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-  swapchainCreateInfo.presentMode = presentMode;
-  swapchainCreateInfo.clipped = VK_TRUE;
-  swapchainCreateInfo.oldSwapchain = swapchain;
-
-  VkSemaphoreCreateInfo semaphoreCreateInfo = {};
-  semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-  VK_CHECK(vkCreateSwapchainKHR(gpu->device, &swapchainCreateInfo, gpu->allocationCallbacks, &swapchain));
-  assert(swapchain != VK_NULL_HANDLE);
-
-  uint32_t swapchainImageCount = 0;
-  VK_CHECK(vkGetSwapchainImagesKHR(gpu->device, swapchain, &swapchainImageCount, nullptr));
-  images.resize(swapchainImageCount);
-  imageViews.resize(swapchainImageCount);
-  readyForRender.resize(swapchainImageCount);
-  readyForPresent.resize(swapchainImageCount);
-  VK_CHECK(vkGetSwapchainImagesKHR(gpu->device, swapchain, &swapchainImageCount, images.data()));
-
-  VkImageViewCreateInfo imageViewCreateInfo = {};
-  imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  imageViewCreateInfo.format = format.format;
-  imageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-  imageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-  imageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-  imageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-  imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-  imageViewCreateInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-  imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-  imageViewCreateInfo.subresourceRange.layerCount = 1;
-
-  for (uint32_t i = 0; i < images.size(); i++) {
-    imageViewCreateInfo.image = images[i];
-    VK_CHECK(vkCreateSemaphore(gpu->device, &semaphoreCreateInfo, gpu->allocationCallbacks, &readyForRender[i]));
-    VK_CHECK(vkCreateSemaphore(gpu->device, &semaphoreCreateInfo, gpu->allocationCallbacks, &readyForPresent[i]));
-    VK_CHECK(vkCreateImageView(gpu->device, &imageViewCreateInfo, gpu->allocationCallbacks, &imageViews[i]));
 #ifndef NDEBUG
-    std::string imageName = std::format("Swapchain Image {}", i);
-    std::string readyForRenderName = std::format("Swapchain Image {} Ready For Render Semaphore", i);
-    std::string readyForPresentName = std::format("Swapchain Image {} Ready For Present Semaphore", i);
-    std::string imageViewName = std::format("Swapchain Image {} View", i);
-
-    VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
-    debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-
-    debugUtilsObjectNameInfoEXT.pObjectName = imageName.c_str();
-    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)images[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
-
-    debugUtilsObjectNameInfoEXT.pObjectName = imageViewName.c_str();
-    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)imageViews[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
-
-    debugUtilsObjectNameInfoEXT.pObjectName = readyForRenderName.c_str();
-    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SEMAPHORE;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)readyForRender[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
-
-    debugUtilsObjectNameInfoEXT.pObjectName = readyForPresentName.c_str();
-    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SEMAPHORE;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)readyForPresent[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
+  vertexBufferDesc.debugName = "Vertex Buffer";
+  indexBufferDesc.debugName = "Index Buffer";
+  indirectBufferDesc.debugName = "Indirect Buffer";
+  transformBufferDesc.debugName = "Transform Buffer";
+  drawBufferDesc.debugName = "Draw Buffer";
+  pipelineDesc.debugName = "Pipeline";
 #endif
+
+  World world = {};
+  world.description = description;
+  world.vertexBuffer = create(vertexBufferDesc);
+  world.indexBuffer = create(indexBufferDesc);
+  world.indirectBuffer = create(indirectBufferDesc);
+  world.transformBuffer = create(transformBufferDesc);
+  world.drawBuffer = create(drawBufferDesc);
+  world.pipeline = create(pipelineDesc);
+
+  std::vector<VkDrawIndexedIndirectCommand> drawCommands(description->meshCount);
+  std::vector<Draw> draws(description->meshCount);
+
+  for (auto i = 0; std::cmp_less(i, description->meshCount); i++) {
+    drawCommands[i].indexCount = description->meshData[i].indexCount;
+    drawCommands[i].instanceCount = 1;
+    drawCommands[i].firstIndex = description->meshData[i].indexOffset;
+    drawCommands[i].vertexOffset = static_cast<int32_t>(description->meshData[i].vertexOffset);
+    drawCommands[i].firstInstance = i;
+    draws[i].transformIdx = i;
   }
+
+  submit([&](VkCommandBuffer commandBuffer) -> void {
+    Buffer::Write vertexBufferWrite = {};
+    void *pVertexData[] = {description->vertexData};
+    vertexBufferWrite.writesData = pVertexData;
+    vertexBufferWrite.writesSize = 1;
+    vertexBufferWrite.writesSizes = &vertexBufferDesc.size;
+    write(world.vertexBuffer, commandBuffer, vertexBufferWrite);
+
+    Buffer::Write indexBufferWrite = {};
+    void *pIndexData[] = {description->indexData};
+    indexBufferWrite.writesData = pIndexData;
+    indexBufferWrite.writesSize = 1;
+    indexBufferWrite.writesSizes = &indexBufferDesc.size;
+    write(world.indexBuffer, commandBuffer, indexBufferWrite);
+
+    Buffer::Write indirectBufferWrite = {};
+    void *pIndirectData[] = {drawCommands.data()};
+    indirectBufferWrite.writesData = pIndirectData;
+    indirectBufferWrite.writesSize = 1;
+    indirectBufferWrite.writesSizes = &indirectBufferDesc.size;
+    write(world.indirectBuffer, commandBuffer, indirectBufferWrite);
+
+    Buffer::Write transformBufferWrite = {};
+    void *pTransformData[] = {description->transformData};
+    transformBufferWrite.writesData = pTransformData;
+    transformBufferWrite.writesSize = 1;
+    transformBufferWrite.writesSizes = &transformBufferDesc.size;
+    write(world.transformBuffer, commandBuffer, transformBufferWrite);
+
+    Buffer::Write drawBufferWrite = {};
+    void *pDrawData[] = {draws.data()};
+    drawBufferWrite.writesData = pDrawData;
+    drawBufferWrite.writesSize = 1;
+    drawBufferWrite.writesSizes = &drawBufferDesc.size;
+    write(world.drawBuffer, commandBuffer, drawBufferWrite);
+  });
+
+  return worlds.allocate(nullptr, world);
 }
 
-auto Gpu::Surface::cleanupSwapchainResources() -> void {
-  for (uint32_t i = 0; i < images.size(); i++) {
-    vkDestroyImageView(gpu->device, imageViews[i], gpu->allocationCallbacks);
-    vkDestroySemaphore(gpu->device, readyForRender[i], gpu->allocationCallbacks);
-    vkDestroySemaphore(gpu->device, readyForPresent[i], gpu->allocationCallbacks);
-  }
+auto Gpu::destroy(Handle<World> world) -> void {
 }
 
-auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> void {
-  if (width != extent.width || height != extent.height) {
-    initSwapchain(width, height);
+auto Gpu::destroy(World &world) -> void {
+}
+
+auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::mat4 projection, uint32_t width, uint32_t height, float clearColor) -> void {
+  Surface &surface = *surfaces.get(surfaceHandle);
+
+  if (width != surface.extent.width || height != surface.extent.height) {
+    initSwapchain(surface, width, height);
   }
 
-  const VkFence fence = gpu->frameFences[gpu->frameNumber % gpu->frameFences.size()];
+  const VkFence fence = frameFences[frameNumber % frameFences.size()];
   assert(fence != VK_NULL_HANDLE);
 
-  while (vkWaitForFences(gpu->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_TIMEOUT) {
+  while (vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_TIMEOUT) {
     ;
   }
-  VK_CHECK(vkResetFences(gpu->device, 1, &fence));
+  VK_CHECK(vkResetFences(device, 1, &fence));
 
-  VkSemaphore imageReadyForRender = readyForRender[gpu->frameNumber % readyForRender.size()];
+  VkSemaphore imageReadyForRender = surface.readyForRender[frameNumber % surface.readyForRender.size()];
 
   uint32_t swapchainImageIndex = {};
-  VkResult acquireResult = vkAcquireNextImageKHR(gpu->device, swapchain, UINT64_MAX, imageReadyForRender, VK_NULL_HANDLE, &swapchainImageIndex);
-  VkSemaphore imageReadyForPresent = readyForPresent[swapchainImageIndex];
+  VkResult acquireResult = vkAcquireNextImageKHR(device, surface.swapchain, UINT64_MAX, imageReadyForRender, VK_NULL_HANDLE, &swapchainImageIndex);
+  VkSemaphore imageReadyForPresent = surface.readyForPresent[swapchainImageIndex];
 
   VkCommandBufferBeginInfo commandBufferBeginInfo = {};
   commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   commandBufferBeginInfo.pInheritanceInfo = nullptr;
 
-  VkCommandBuffer commandBuffer = gpu->frameCommandBuffers[gpu->frameNumber % gpu->frameCommandBuffers.size()];
+  VkCommandBuffer commandBuffer = frameCommandBuffers[frameNumber % frameCommandBuffers.size()];
   assert(commandBuffer != VK_NULL_HANDLE);
 
   VK_CHECK(vkResetCommandBuffer(commandBuffer, 0));
@@ -1674,7 +1652,7 @@ auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> vo
   imageMemoryBarrier2.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   imageMemoryBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   imageMemoryBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  imageMemoryBarrier2.image = images[swapchainImageIndex];
+  imageMemoryBarrier2.image = surface.images[swapchainImageIndex];
   imageMemoryBarrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   imageMemoryBarrier2.subresourceRange.baseMipLevel = 0;
   imageMemoryBarrier2.subresourceRange.levelCount = 1;
@@ -1692,7 +1670,7 @@ auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> vo
 
   VkRenderingAttachmentInfo renderingAttachmentInfo = {};
   renderingAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-  renderingAttachmentInfo.imageView = imageViews[swapchainImageIndex];
+  renderingAttachmentInfo.imageView = surface.imageViews[swapchainImageIndex];
   renderingAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   renderingAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   renderingAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1703,7 +1681,7 @@ auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> vo
   renderingInfo.layerCount = 1;
   renderingInfo.colorAttachmentCount = 1;
   renderingInfo.pColorAttachments = &renderingAttachmentInfo;
-  renderingInfo.renderArea.extent = extent;
+  renderingInfo.renderArea.extent = surface.extent;
   renderingInfo.renderArea.offset.x = 0;
   renderingInfo.renderArea.offset.y = 0;
 
@@ -1712,19 +1690,40 @@ auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> vo
   VkViewport viewport = {};
   viewport.x = 0;
   viewport.y = 0;
-  viewport.width = (float)extent.width;
-  viewport.height = (float)extent.height;
+  viewport.width = (float)surface.extent.width;
+  viewport.height = (float)surface.extent.height;
   viewport.minDepth = 0;
   viewport.maxDepth = 1;
   vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-  assert(extent.width > 0);
+  assert(surface.extent.width > 0);
 
   VkRect2D scissor = {};
-  scissor.extent = extent;
+  scissor.extent = surface.extent;
   scissor.offset.x = 0;
   scissor.offset.y = 0;
   vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+  World *world = worlds.get(worldHandle);
+  Buffer *vertexBuffer = buffers.get(world->vertexBuffer);
+  Buffer *indexBuffer = buffers.get(world->indexBuffer);
+  Buffer *indirectBuffer = buffers.get(world->indirectBuffer);
+  Buffer *drawBuffer = buffers.get(world->drawBuffer);
+  Buffer *transformBuffer = buffers.get(world->transformBuffer);
+  Pipeline *pipeline = pipelines.get(world->pipeline);
+
+  World::PushConstants pushConstants = {};
+  pushConstants.drawBuffer = drawBuffer->address;
+  pushConstants.transformBuffer = transformBuffer->address;
+  pushConstants.vertexBuffer = vertexBuffer->address;
+  pushConstants.proj = projection;
+  pushConstants.proj[1][1] *= -1;
+
+  vkCmdBindIndexBuffer(commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &descriptorSet, 0, nullptr);
+  vkCmdPushConstants(commandBuffer, pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(World::PushConstants), &pushConstants);
+  vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer->buffer, 0, world->description->meshCount, sizeof(VkDrawIndexedIndirectCommand));
 
   vkCmdEndRendering(commandBuffer);
 
@@ -1737,7 +1736,7 @@ auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> vo
   imageMemoryBarrier2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   imageMemoryBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   imageMemoryBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  imageMemoryBarrier2.image = images[swapchainImageIndex];
+  imageMemoryBarrier2.image = surface.images[swapchainImageIndex];
   imageMemoryBarrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   imageMemoryBarrier2.subresourceRange.baseMipLevel = 0;
   imageMemoryBarrier2.subresourceRange.levelCount = 1;
@@ -1762,16 +1761,202 @@ auto Gpu::Surface::draw(uint32_t width, uint32_t height, float clearColor) -> vo
   submitInfo.pSignalSemaphores = &imageReadyForPresent;
   std::array<VkPipelineStageFlags, 1> waitStages = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
   submitInfo.pWaitDstStageMask = waitStages.data();
-  VK_CHECK(vkQueueSubmit(gpu->graphicsQueue, 1, &submitInfo, fence));
+  VK_CHECK(vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence));
 
   VkPresentInfoKHR presentInfo = {};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
   presentInfo.waitSemaphoreCount = 1;
   presentInfo.pWaitSemaphores = &imageReadyForPresent;
   presentInfo.swapchainCount = 1;
-  presentInfo.pSwapchains = &swapchain;
+  presentInfo.pSwapchains = &surface.swapchain;
   presentInfo.pImageIndices = &swapchainImageIndex;
-  VK_CHECK(vkQueuePresentKHR(gpu->graphicsQueue, &presentInfo));
+  VK_CHECK(vkQueuePresentKHR(graphicsQueue, &presentInfo));
 
-  gpu->frameNumber++;
+  frameNumber++;
+}
+
+auto Gpu::submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordCommands) const -> void {
+  VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+
+  VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
+  commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  commandBufferAllocateInfo.commandPool = graphicsCommandPool;
+  commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  commandBufferAllocateInfo.commandBufferCount = 1;
+  VK_CHECK(vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, &commandBuffer));
+
+  VkCommandBufferBeginInfo commandBufferBeginInfo = {};
+  commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  commandBufferBeginInfo.pInheritanceInfo = nullptr;
+  VK_CHECK(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo));
+
+  recordCommands(commandBuffer);
+
+  VK_CHECK(vkEndCommandBuffer(commandBuffer));
+
+  VkCommandBufferSubmitInfo commandBufferSubmitInfo = {};
+  commandBufferSubmitInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+  commandBufferSubmitInfo.commandBuffer = commandBuffer;
+
+  VkSubmitInfo2 submitInfo2 = {};
+  submitInfo2.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+  submitInfo2.commandBufferInfoCount = 1;
+  submitInfo2.pCommandBufferInfos = &commandBufferSubmitInfo;
+  VK_CHECK(vkQueueSubmit2(graphicsQueue, 1, &submitInfo2, VK_NULL_HANDLE));
+
+  vkDeviceWaitIdle(device);
+}
+
+auto Gpu::create(Surface::Desc &description) -> Handle<Surface> {
+  LOG_DEBUG("Surface");
+  Surface surface = {};
+  bool surfaceOk = SDL_Vulkan_CreateSurface(description.window, instance, allocationCallbacks, &surface.surface);
+  assert(surfaceOk && "SDL failed creating surface");
+  assert(surface.surface != VK_NULL_HANDLE);
+  initSwapchain(surface, description.width, description.height);
+  return surfaces.allocate(nullptr, surface);
+}
+
+auto Gpu::destroy(Handle<Surface> surface) -> void {
+  surfaces.free(surface);
+}
+
+auto Gpu::destroy(Surface &surface) -> void {
+  vkDeviceWaitIdle(device);
+  cleanupSwapchainResources(surface);
+  vkDestroySwapchainKHR(device, surface.swapchain, allocationCallbacks);
+  vkDestroySurfaceKHR(instance, surface.surface, allocationCallbacks);
+  LOG_DEBUG("~Surface");
+}
+
+auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> void {
+  if (surface.swapchain != VK_NULL_HANDLE) {
+    cleanupSwapchainResources(surface);
+  }
+
+  VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
+  VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface.surface, &surfaceCapabilities));
+
+  uint32_t surfaceFormatCount = 0;
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface.surface, &surfaceFormatCount, nullptr));
+  std::vector<VkSurfaceFormatKHR> availableSurfaceFormats(surfaceFormatCount);
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface.surface, &surfaceFormatCount, availableSurfaceFormats.data()));
+
+  surface.format = availableSurfaceFormats[0];
+  for (uint32_t i = 0; i < surfaceFormatCount; i++) {
+    if (availableSurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB && availableSurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+      surface.format = availableSurfaceFormats[i];
+      break;
+    }
+  }
+
+  VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+  // uint32_t presentModeCount = 0;
+  // VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(gpu.>physicalDevice, surface, &presentModeCount, NULL));
+  // std::vector<VkPresentModeKHR> availablePresentModes(presentModeCount);
+  // VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(gpu.>physicalDevice, surface, &presentModeCount, availablePresentModes.data()));
+
+  // for (uint32_t i = 0; i < presentModeCount; i++) {
+  //   if (availablePresentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+  //     presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+  //     break;
+  //   }
+  // }
+
+  surface.extent.width = std::max(std::min(width, surfaceCapabilities.maxImageExtent.width), surfaceCapabilities.minImageExtent.width);
+  surface.extent.height = std::max(std::min(height, surfaceCapabilities.maxImageExtent.height), surfaceCapabilities.minImageExtent.height);
+
+  uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
+  if (surfaceCapabilities.maxImageCount > 0 && imageCount > surfaceCapabilities.maxImageCount) {
+    imageCount = surfaceCapabilities.maxImageCount;
+  }
+
+  VkSwapchainCreateInfoKHR swapchainCreateInfo = {};
+  swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+  swapchainCreateInfo.surface = surface.surface;
+  swapchainCreateInfo.minImageCount = imageCount;
+  swapchainCreateInfo.imageFormat = surface.format.format;
+  swapchainCreateInfo.imageColorSpace = surface.format.colorSpace;
+  swapchainCreateInfo.imageExtent = surface.extent;
+  swapchainCreateInfo.imageArrayLayers = 1;
+  swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  swapchainCreateInfo.preTransform = surfaceCapabilities.currentTransform;
+  swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+  swapchainCreateInfo.presentMode = presentMode;
+  swapchainCreateInfo.clipped = VK_TRUE;
+  swapchainCreateInfo.oldSwapchain = surface.swapchain;
+
+  VkSemaphoreCreateInfo semaphoreCreateInfo = {};
+  semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+  VK_CHECK(vkCreateSwapchainKHR(device, &swapchainCreateInfo, allocationCallbacks, &surface.swapchain));
+  assert(surface.swapchain != VK_NULL_HANDLE);
+
+  uint32_t swapchainImageCount = 0;
+  VK_CHECK(vkGetSwapchainImagesKHR(device, surface.swapchain, &swapchainImageCount, nullptr));
+  surface.images.resize(swapchainImageCount);
+  surface.imageViews.resize(swapchainImageCount);
+  surface.readyForRender.resize(swapchainImageCount);
+  surface.readyForPresent.resize(swapchainImageCount);
+  VK_CHECK(vkGetSwapchainImagesKHR(device, surface.swapchain, &swapchainImageCount, surface.images.data()));
+
+  VkImageViewCreateInfo imageViewCreateInfo = {};
+  imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  imageViewCreateInfo.format = surface.format.format;
+  imageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  imageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  imageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  imageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
+  imageViewCreateInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+  imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
+  imageViewCreateInfo.subresourceRange.layerCount = 1;
+
+  for (uint32_t i = 0; i < surface.images.size(); i++) {
+    imageViewCreateInfo.image = surface.images[i];
+    VK_CHECK(vkCreateSemaphore(device, &semaphoreCreateInfo, allocationCallbacks, &surface.readyForRender[i]));
+    VK_CHECK(vkCreateSemaphore(device, &semaphoreCreateInfo, allocationCallbacks, &surface.readyForPresent[i]));
+    VK_CHECK(vkCreateImageView(device, &imageViewCreateInfo, allocationCallbacks, &surface.imageViews[i]));
+#ifndef NDEBUG
+    std::string imageName = std::format("Swapchain Image {}", i);
+    std::string readyForRenderName = std::format("Swapchain Image {} Ready For Render Semaphore", i);
+    std::string readyForPresentName = std::format("Swapchain Image {} Ready For Present Semaphore", i);
+    std::string imageViewName = std::format("Swapchain Image {} View", i);
+
+    VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
+    debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+
+    debugUtilsObjectNameInfoEXT.pObjectName = imageName.c_str();
+    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE;
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.images[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+
+    debugUtilsObjectNameInfoEXT.pObjectName = imageViewName.c_str();
+    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.imageViews[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+
+    debugUtilsObjectNameInfoEXT.pObjectName = readyForRenderName.c_str();
+    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SEMAPHORE;
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.readyForRender[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+
+    debugUtilsObjectNameInfoEXT.pObjectName = readyForPresentName.c_str();
+    debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SEMAPHORE;
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.readyForPresent[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+#endif
+  }
+}
+
+auto Gpu::cleanupSwapchainResources(Surface &surface) -> void {
+  for (uint32_t i = 0; i < surface.images.size(); i++) {
+    vkDestroyImageView(device, surface.imageViews[i], allocationCallbacks);
+    vkDestroySemaphore(device, surface.readyForRender[i], allocationCallbacks);
+    vkDestroySemaphore(device, surface.readyForPresent[i], allocationCallbacks);
+  }
 }
