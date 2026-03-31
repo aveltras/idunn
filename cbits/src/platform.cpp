@@ -120,18 +120,22 @@ auto Platform::tick() -> void {
 }
 
 auto Platform::subscribe(Key key) -> void {
+  // LOG_DEBUG("Subscribing to key: %i", key);
   keys[mapKey(key)] = key;
 }
 
 auto Platform::subscribe(Scancode scancode) -> void {
+  // LOG_DEBUG("Subscribing to scancode: %i", scancode);
   scancodes[mapScancode(scancode)] = scancode;
 }
 
 auto Platform::unsubscribe(Key key) -> void {
+  // LOG_DEBUG("Unsubscribing from key: %i", key);
   keys.erase(mapKey(key));
 }
 
 auto Platform::unsubscribe(Scancode scancode) -> void {
+  // LOG_DEBUG("Unsubscribing from scancode: %i", scancode);
   scancodes.erase(mapScancode(scancode));
 }
 

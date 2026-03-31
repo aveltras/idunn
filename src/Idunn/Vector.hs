@@ -83,3 +83,13 @@ pushBack v item = do
 
 cap :: PinnedVector a -> IO CSize
 cap v = peek (capPtr v)
+
+{-# INLINE readIndex #-}
+readIndex :: (Storable a) => PinnedVector a -> Int -> IO a
+readIndex v (I# i#) = IO $ \s# -> unIO (peekElemOff (dataPtr v) (I# i#)) s#
+
+{-# INLINE writeIndex #-}
+writeIndex :: (Storable a) => PinnedVector a -> Int -> a -> IO ()
+writeIndex v idx item = do
+  let ptr = dataPtr v
+  pokeElemOff ptr idx item

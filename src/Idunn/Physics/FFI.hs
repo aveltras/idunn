@@ -28,11 +28,22 @@
 
 module Idunn.Physics.FFI where
 
+import HsBindgen.Runtime.LibC
 import HsBindgen.TH
 
 let cfg :: Config
     cfg = def {clang = def {argsInner = ["-std=c23"]}}
     cfgTH :: ConfigTH
-    cfgTH = def {categoryChoice = useUnsafeCategory}
+    cfgTH =
+      def
+        { categoryChoice =
+            ByCategory
+              { cType = IncludeTypeCategory,
+                cSafe = IncludeTermCategory $ RenameTerm (<> "_safe"),
+                cUnsafe = IncludeTermCategory def,
+                cFunPtr = ExcludeCategory,
+                cGlobal = IncludeTermCategory def
+              }
+        }
  in withHsBindgen cfg cfgTH $ do
       hashInclude "idunn/physics.h"

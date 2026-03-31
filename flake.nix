@@ -71,9 +71,14 @@
           src = inputs.JoltPhysics;
           nativeBuildInputs = with prev; [ cmake ];
           cmakeDir = "../Build";
+          # https://github.com/jrouwe/JoltPhysics/blob/v5.5.0/Build/CMakeLists.txt
           cmakeFlags = [
             "-DCMAKE_BUILD_TYPE=Debug"
             "-DBUILD_SHARED_LIBS=ON"
+            "-DUSE_ASSERTS=OFF"
+            "-DDEBUG_RENDERER_IN_DEBUG_AND_RELEASE=OFF"
+            "-DPROFILER_IN_DEBUG_AND_RELEASE=OFF"
+            "-DENABLE_OBJECT_STREAM=OFF"
           ];
         };
       };
@@ -148,6 +153,7 @@
           precommitCheck.enabledPackages
           ++ [
             bear
+            gdb
             ghciwatch
             haskellPackages.cabal-install
             haskellPackages.cabal-gild

@@ -21,6 +21,7 @@ module Idunn.Linear.Mat
   ( Mat4x4,
     mkMat4x4,
     identity,
+    multiply,
   )
 where
 
@@ -69,3 +70,36 @@ instance Storable Mat4x4 where
 
 identity :: Mat4x4
 identity = mkMat4x4 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+
+multiply :: Mat4x4 -> Mat4x4 -> Mat4x4
+multiply (Mat4x4 p#) (Mat4x4 l#) = unsafeDupablePerformIO $ IO $ \s0# ->
+  case newAlignedPinnedByteArray# 64# 16# s0# of
+    (# s1#, marr# #) ->
+      let at arr# i# = indexFloatArray# arr# i#
+          writeRes# col# row# s# =
+            let !val# =
+                  ( ((at p# row#) `timesFloat#` (at l# (col# *# 4#)))
+                      `plusFloat#` ((at p# (4# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 1#)))
+                  )
+                    `plusFloat#` ( ((at p# (8# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 2#)))
+                                     `plusFloat#` ((at p# (12# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 3#)))
+                                 )
+             in writeFloatArray# marr# (col# *# 4# +# row#) val# s#
+          s2 = writeRes# 0# 0# s1#
+          s3 = writeRes# 0# 1# s2
+          s4 = writeRes# 0# 2# s3
+          s5 = writeRes# 0# 3# s4
+          s6 = writeRes# 1# 0# s5
+          s7 = writeRes# 1# 1# s6
+          s8 = writeRes# 1# 2# s7
+          s9 = writeRes# 1# 3# s8
+          s10 = writeRes# 2# 0# s9
+          s11 = writeRes# 2# 1# s10
+          s12 = writeRes# 2# 2# s11
+          s13 = writeRes# 2# 3# s12
+          s14 = writeRes# 3# 0# s13
+          s15 = writeRes# 3# 1# s14
+          s16 = writeRes# 3# 2# s15
+          s17 = writeRes# 3# 3# s16
+       in case unsafeFreezeByteArray# marr# s17 of
+            (# s18#, res# #) -> (# s18#, Mat4x4 res# #)

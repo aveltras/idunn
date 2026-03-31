@@ -677,8 +677,10 @@ subscribe item = do
         Nothing -> (Map.insert item (IntMap.singleton subscription eventTrigger) currentSubscribers, True)
     when shouldSubscribe $ c'subscribe platform.ptr item
     pure $ do
-      remainingSubscribers <- atomicModifyIORef' (subscribersRef platform) $ \currentSubscribers -> do
-        let thisKeySubscribers = IntMap.delete subscription $ currentSubscribers Map.! item
-         in (Map.insert item thisKeySubscribers currentSubscribers, thisKeySubscribers)
-      when (IntMap.null remainingSubscribers) $ do
-        c'unsubscribe platform.ptr item
+      shouldUnsubscribe <- atomicModifyIORef' (subscribersRef platform) $ \currentSubscribers -> do
+        let triggerMap = Map.findWithDefault IntMap.empty item currentSubscribers
+            newTriggerMap = IntMap.delete subscription triggerMap
+         in if IntMap.null newTriggerMap
+              then (Map.delete item currentSubscribers, True)
+              else (Map.insert item newTriggerMap currentSubscribers, False)
+      when shouldUnsubscribe $ c'unsubscribe platform.ptr item
