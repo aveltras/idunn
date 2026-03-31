@@ -19,6 +19,7 @@
 
 // NOLINTBEGIN
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -559,6 +560,7 @@ typedef struct idunn_platform_event {
 } idunn_platform_event;
 
 typedef struct idunn_platform_config {
+  float *pDeltaTime;
   uint32_t *pEventCount;
   idunn_platform_event **ppEvent;
 } idunn_platform_config;

@@ -27,7 +27,7 @@
 
 extern "C" {
 void idunn_platform_init(idunn_platform_config *config, void **pPlatform) {
-  *pPlatform = new Platform(config->pEventCount, config->ppEvent);
+  *pPlatform = new Platform(config->pDeltaTime, config->pEventCount, config->ppEvent);
 }
 
 void idunn_platform_uninit(void *platform) {
@@ -67,11 +67,14 @@ void idunn_platform_window_render(void *window, uint64_t gpuWorld) {
 }
 }
 
-Platform::Platform(uint32_t *pEventCount, idunn_platform_event **ppEvent)
-    : pEventCount(pEventCount),
+Platform::Platform(float *pDeltaTime, uint32_t *pEventCount, idunn_platform_event **ppEvent)
+    : pDeltaTime(pDeltaTime),
+      pEventCount(pEventCount),
       ppEvent(ppEvent) {
   LOG_DEBUG("Platform");
   SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+  ticks = SDL_GetPerformanceCounter();
+  frequency = SDL_GetPerformanceFrequency();
 }
 
 Platform::~Platform() {
@@ -81,6 +84,11 @@ Platform::~Platform() {
 
 auto Platform::tick() -> void {
   tickEvents.clear();
+
+  uint64_t currentTicks = SDL_GetPerformanceCounter();
+  *pDeltaTime = (float)(currentTicks - ticks) / (float)frequency;
+
+  ticks = currentTicks;
 
   SDL_Event sdlEvent;
   while (SDL_PollEvent(&sdlEvent)) {
@@ -120,18 +128,22 @@ auto Platform::tick() -> void {
 }
 
 auto Platform::subscribe(Key key) -> void {
+  // LOG_DEBUG("Subscribing to key: %i", key);
   keys[mapKey(key)] = key;
 }
 
 auto Platform::subscribe(Scancode scancode) -> void {
+  // LOG_DEBUG("Subscribing to scancode: %i", scancode);
   scancodes[mapScancode(scancode)] = scancode;
 }
 
 auto Platform::unsubscribe(Key key) -> void {
+  // LOG_DEBUG("Unsubscribing from key: %i", key);
   keys.erase(mapKey(key));
 }
 
 auto Platform::unsubscribe(Scancode scancode) -> void {
+  // LOG_DEBUG("Unsubscribing from scancode: %i", scancode);
   scancodes.erase(mapScancode(scancode));
 }
 

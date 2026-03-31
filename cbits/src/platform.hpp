@@ -34,7 +34,7 @@ static constexpr uint32_t kSizeExtended = (SDLK_RHYPER & ~SDLK_EXTENDED_MASK) - 
 static constexpr uint32_t kKeyNumEntries = kSizeBase + kSizeScancode + kSizeExtended;
 
 struct Platform {
-  explicit Platform(uint32_t *pEventCount, idunn_platform_event **ppEvent);
+  explicit Platform(float *pDeltaTime, uint32_t *pEventCount, idunn_platform_event **ppEvent);
   ~Platform();
   auto tick() -> void;
   auto subscribe(Key key) -> void;
@@ -43,6 +43,9 @@ struct Platform {
   auto unsubscribe(Scancode scancode) -> void;
 
 private:
+  uint64_t ticks;
+  uint64_t frequency;
+  float *pDeltaTime;
   uint32_t *pEventCount;
   idunn_platform_event **ppEvent;
   std::vector<idunn_platform_event> tickEvents;

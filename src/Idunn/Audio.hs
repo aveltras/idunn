@@ -23,6 +23,7 @@ module Idunn.Audio
   )
 where
 
+import Apecs hiding (asks)
 import Control.Monad.Reader
 import Data.Void (Void)
 import Foreign
@@ -47,8 +48,8 @@ initAudio = snd <$> allocate up down
         Audio <$> peek pAudio
     down audio = idunn_audio_uninit audio.ptr
 
-playSound :: (HasAudio env, MonadReader env m, MonadIO m) => FilePath -> m ()
+playSound :: (HasAudio env, MonadReader env m, MonadIO m) => FilePath -> SystemT w m ()
 playSound soundPath = do
-  audio <- asks getAudio
+  audio <- lift $ asks getAudio
   liftIO $ withCString soundPath $ \c'soundPath ->
     idunn_audio_sound_play audio.ptr $ ConstPtr c'soundPath

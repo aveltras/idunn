@@ -17,6 +17,28 @@
         "type": "github"
       }
     },
+    "apecs": {
+      "inputs": {
+        "flake-utils": "flake-utils",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1775928562,
+        "narHash": "sha256-j8LQm86rmLa1UIc81NqFiBI0RzWpfv4kCgxyoukOfSc=",
+        "owner": "aveltras",
+        "repo": "apecs",
+        "rev": "1dae739f561dda5a7602d10b4e25ec7bdb09907f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "aveltras",
+        "repo": "apecs",
+        "rev": "1dae739f561dda5a7602d10b4e25ec7bdb09907f",
+        "type": "github"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -48,6 +70,21 @@
       "original": {
         "owner": "hercules-ci",
         "repo": "flake-parts",
+        "type": "github"
+      }
+    },
+    "flake-utils": {
+      "locked": {
+        "lastModified": 1676283394,
+        "narHash": "sha256-XX2f9c3iySLCw54rJ/CZs+ZK6IQy7GXNY4nSOyu2QG4=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "3db36a8b464d0c4532ba1c7dda728f4576d6d073",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
         "type": "github"
       }
     },
@@ -183,6 +220,7 @@
     "root": {
       "inputs": {
         "JoltPhysics": "JoltPhysics",
+        "apecs": "apecs",
         "git-hooks": "git-hooks",
         "hs-bindgen": "hs-bindgen",
         "nix-filter": "nix-filter",

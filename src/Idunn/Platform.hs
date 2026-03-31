@@ -21,6 +21,7 @@ module Idunn.Platform
   ( Platform (..),
     HasPlatform (..),
     initPlatform,
+    Window,
     initWindow,
     render,
     subscribe,
@@ -529,6 +530,7 @@ module Idunn.Platform
   )
 where
 
+import Apecs hiding (Map, asks)
 import Control.Monad (unless, when)
 import Control.Monad.Reader
 import Data.Dependent.Sum
@@ -544,6 +546,7 @@ import Data.Text.Foreign (withCString)
 import Data.Unique (hashUnique, newUnique)
 import Data.Void
 import Foreign
+import Foreign.C hiding (withCString)
 import Foreign.C.ConstPtr
 import Idunn.Gpu
 import Idunn.Platform.FFI
@@ -554,6 +557,7 @@ import UnliftIO.Resource
 
 data Platform t = Platform
   { ptr :: Ptr Void,
+    ptrDeltaTime :: Ptr CFloat,
     ptrEventCount :: Ptr Word32,
     ptrEventsPtr :: Ptr (Ptr Idunn_platform_event),
     eventsRef :: IORef [DSum (EventTrigger t) Identity],
@@ -569,9 +573,10 @@ initPlatform = snd <$> allocate up down
   where
     up = alloca $ \ptrPlatformPtr ->
       alloca $ \ptrConfig -> do
+        ptrDeltaTime <- malloc
         ptrEventCount <- malloc
         ptrEventsPtr <- malloc
-        poke ptrConfig $ Idunn_platform_config ptrEventCount ptrEventsPtr
+        poke ptrConfig $ Idunn_platform_config ptrDeltaTime ptrEventCount ptrEventsPtr
         idunn_platform_init ptrConfig ptrPlatformPtr
         ptrPlatform <- peek ptrPlatformPtr
         eventsRef <- newIORef mempty
@@ -580,6 +585,7 @@ initPlatform = snd <$> allocate up down
         pure $
           Platform
             { ptr = ptrPlatform,
+              ptrDeltaTime = ptrDeltaTime,
               ptrEventCount = ptrEventCount,
               ptrEventsPtr = ptrEventsPtr,
               eventsRef = eventsRef,
@@ -592,8 +598,9 @@ initPlatform = snd <$> allocate up down
       idunn_platform_uninit platform.ptr
       free platform.ptrEventCount
       free platform.ptrEventsPtr
+      free platform.ptrDeltaTime
 
-tick :: forall t m. (MonadIO m) => (Platform t) -> m Bool
+tick :: forall t m. (MonadIO m) => (Platform t) -> m (Bool, Float)
 tick platform = do
   shouldQuitRef <- newIORef False
   liftIO $ idunn_platform_tick platform.ptr
@@ -607,7 +614,9 @@ tick platform = do
         ScancodeEvent -> extractEventValue event $ Proxy @Scancode
         QuitEvent -> writeIORef shouldQuitRef True
         _ -> pure ()
-  readIORef shouldQuitRef
+  shouldQuit <- readIORef shouldQuitRef
+  CFloat deltaTime <- liftIO $ peek platform.ptrDeltaTime
+  pure (shouldQuit, deltaTime)
   where
     extractEventValue :: forall item. (Subscribe item) => Idunn_platform_event -> Proxy item -> m ()
     extractEventValue event _ = do
@@ -633,7 +642,7 @@ initWindow platform gpu title width height = snd <$> allocate up down
           Window <$> peek pWindow
     down window = idunn_platform_window_uninit window.ptr
 
-render :: (MonadIO m) => Window -> GpuWorld vertex -> m ()
+render :: (MonadIO m) => Window -> GpuWorld -> m ()
 render window world = liftIO $ idunn_platform_window_render window.ptr world.handle
 
 type Subscriptions t a = IORef (Map a (IntMap (EventTrigger t (Value a))))
@@ -665,9 +674,9 @@ instance Subscribe Scancode where
     let scancode = idunn_platform_scancode_event_scancode scancodeEvent
     (scancode, toBool $ idunn_platform_scancode_event_value scancodeEvent)
 
-subscribe :: forall t env item m. (Subscribe item, MonadReflexCreateTrigger t m, HasPlatform t env, MonadReader env m) => item -> m (Event t (Value item))
+subscribe :: forall t env w item m. (Subscribe item, MonadReflexCreateTrigger t m, HasPlatform t env, MonadReader env m) => item -> SystemT w m (Event t (Value item))
 subscribe item = do
-  platform :: Platform t <- asks getPlatform
+  platform :: Platform t <- lift $ asks getPlatform
   newEventWithTrigger $ \eventTrigger -> do
     uniq <- liftIO newUnique
     let subscription = hashUnique uniq -- TODO: handle collision
@@ -677,8 +686,10 @@ subscribe item = do
         Nothing -> (Map.insert item (IntMap.singleton subscription eventTrigger) currentSubscribers, True)
     when shouldSubscribe $ c'subscribe platform.ptr item
     pure $ do
-      remainingSubscribers <- atomicModifyIORef' (subscribersRef platform) $ \currentSubscribers -> do
-        let thisKeySubscribers = IntMap.delete subscription $ currentSubscribers Map.! item
-         in (Map.insert item thisKeySubscribers currentSubscribers, thisKeySubscribers)
-      when (IntMap.null remainingSubscribers) $ do
-        c'unsubscribe platform.ptr item
+      shouldUnsubscribe <- atomicModifyIORef' (subscribersRef platform) $ \currentSubscribers -> do
+        let triggerMap = Map.findWithDefault IntMap.empty item currentSubscribers
+            newTriggerMap = IntMap.delete subscription triggerMap
+         in if IntMap.null newTriggerMap
+              then (Map.delete item currentSubscribers, True)
+              else (Map.insert item newTriggerMap currentSubscribers, False)
+      when shouldUnsubscribe $ c'unsubscribe platform.ptr item

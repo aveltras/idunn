@@ -14,99 +14,277 @@
  You should have received a copy of the GNU Affero General Public License
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
+{-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -ddump-splices #-}
 
 module Idunn
   ( module Idunn,
     module Idunn.Audio,
+    module Idunn.Gpu,
     module Idunn.Logger,
     module Idunn.Platform,
     module Idunn.Physics,
+    module Idunn.Linear.Mat,
+    module Idunn.Linear.Vec,
+    module Idunn.World,
+    module Data.Time,
     module Reflex,
+    module Reflex.Network,
+    module Reflex.Time,
+    module Apecs,
   )
 where
 
-import Control.Monad (unless)
-import Control.Monad.Fix (fix)
+import Apecs hiding (ask, asks)
+import Control.Monad (forM, forM_, unless, void, when)
+import Control.Monad.Fix (MonadFix, fix)
 import Control.Monad.Reader
 import Control.Monad.Ref (MonadRef (..), Ref)
+import Control.Monad.Trans.Resource (InternalState, MonadResource (..), getInternalState, runInternalState)
 import Data.Dependent.Sum
 import Data.Functor.Identity (Identity (..))
+import Data.Kind (Type)
+import Data.Maybe (catMaybes)
+import Data.Time
 import Idunn.Audio
 import Idunn.Gpu
+import Idunn.Linear.Mat
+import Idunn.Linear.Vec
 import Idunn.Logger
 import Idunn.Physics
 import Idunn.Platform
+import Idunn.Resource
+import Idunn.Vector
 import Idunn.World
-import Reflex
+import Reflex hiding (Global)
+import Reflex qualified
 import Reflex.Host.Class
+import Reflex.Network
+import Reflex.Time
 import UnliftIO
 import UnliftIO.Resource
 
-type App t m =
+type App t m game =
   ( Reflex t,
     ReflexHost t,
-    MonadRef m,
+    MonadFix m,
     Ref m ~ Ref IO,
+    NotReady t m,
     PerformEvent t m,
+    Adjustable t m,
+    MonadHold t m,
+    MonadResource m,
+    TriggerEvent t m,
     MonadIO (Performable m),
-    MonadReader (AppEnv t) (Performable m),
+    MonadReader (AppEnv t game) (Performable m),
     MonadIO (HostFrame t),
     PostBuild t m,
-    MonadReader (AppEnv t) m,
-    MonadReflexCreateTrigger t m
+    MonadReader (AppEnv t game) m,
+    MonadReflexCreateTrigger t m,
+    HasGame (AppEnv t game) game,
+    Has (GameWorld game) m EntityCounter,
+    Has (GameWorld game) m Node3D,
+    Has (GameWorld game) m GpuWorld,
+    Has (GameWorld game) m GpuMesh
   )
 
-data AppEnv t = AppEnv
+data AppEnv t game = AppEnv
   { platform :: Platform t,
     gpu :: Gpu,
     audio :: Audio,
-    physics :: Physics
+    physics :: Physics,
+    state :: InternalState,
+    resources :: Resources,
+    game :: game,
+    worldInit :: WorldInit
   }
 
-instance HasAudio (AppEnv t) where
+instance HasWorldInit (AppEnv t game) where
+  getWorldInit = worldInit
+
+instance HasAudio (AppEnv t game) where
   getAudio = audio
 
-instance HasPhysics (AppEnv t) where
+instance HasGpu (AppEnv t game) where
+  getGpu = gpu
+
+instance HasPhysics (AppEnv t game) where
   getPhysics = physics
 
-instance HasPlatform t (AppEnv t) where
+instance HasPlatform t (AppEnv t game) where
   getPlatform = platform
 
-type AppM =
-  ReaderT
-    (AppEnv (SpiderTimeline Global))
-    ( PostBuildT
-        (SpiderTimeline Global)
-        ( PerformEventT
-            (SpiderTimeline Global)
-            (SpiderHost Global)
-        )
+instance HasResources (AppEnv t game) where
+  getResources = resources
+
+instance HasGame (AppEnv t game) game where
+  getGame = game
+
+newtype AppT t m game a = AppT
+  { unAppT :: ReaderT (AppEnv t game) m a
+  }
+  deriving newtype
+    ( Applicative,
+      Functor,
+      Monad,
+      MonadFix,
+      MonadIO,
+      MonadHold t,
+      MonadRef,
+      MonadReflexCreateTrigger t,
+      MonadReader (AppEnv t game),
+      MonadSample t,
+      NotReady t,
+      PerformEvent t,
+      PostBuild t,
+      TriggerEvent t
     )
 
-run :: AppM () -> IO ()
-run app = runResourceT $ do
+instance (Adjustable t m) => Adjustable t (AppT t m game) where
+  runWithReplace (AppT a) ev = AppT $ runWithReplace a (fmap unAppT ev)
+  traverseIntMapWithKeyWithAdjust f dm0 dm' = AppT $ traverseIntMapWithKeyWithAdjust (\k v -> unAppT (f k v)) dm0 dm'
+  traverseDMapWithKeyWithAdjust f dm0 dm' = AppT $ traverseDMapWithKeyWithAdjust (\k v -> unAppT (f k v)) dm0 dm'
+  traverseDMapWithKeyWithAdjustWithMove f dm0 dm' = AppT $ traverseDMapWithKeyWithAdjustWithMove (\k v -> unAppT (f k v)) dm0 dm'
+
+instance (MonadIO m) => MonadResource (AppT t m game) where
+  liftResourceT m = do
+    env <- AppT ask
+    liftIO $ runInternalState m env.state
+
+runAppT :: AppEnv t game -> AppT t m game a -> m a
+runAppT env (AppT app) = runReaderT app env
+
+type AppM game =
+  AppT
+    (SpiderTimeline Reflex.Global)
+    ( TriggerEventT
+        (SpiderTimeline Reflex.Global)
+        ( PostBuildT
+            (SpiderTimeline Reflex.Global)
+            ( PerformEventT
+                (SpiderTimeline Reflex.Global)
+                (SpiderHost Reflex.Global)
+            )
+        )
+    )
+    game
+
+class HasGame env game where
+  getGame :: env -> game
+
+class Game game where
+  data GameState game :: Type
+  type GameWorld game :: Type
+  initGameWorld :: (MonadResource m, HasGpu env, HasWorldInit env, MonadReader env m) => Proxy game -> m (GameWorld game)
+  system :: (App t m game) => GameState game -> SystemT (GameWorld game) m (Event t (GameState game))
+
+run ::
+  forall game.
+  ( Game game,
+    Has (GameWorld game) (AppM game) EntityCounter,
+    Has (GameWorld game) (AppM game) Node3D,
+    Has (GameWorld game) (AppM game) GpuWorld,
+    Has (GameWorld game) (AppM game) GpuMesh,
+    Has (GameWorld game) (SpiderHost Reflex.Global) GpuWorld,
+    Has (GameWorld game) (SpiderHost Reflex.Global) Node3D,
+    Has (GameWorld game) (SpiderHost Reflex.Global) Time,
+    Has (GameWorld game) (SpiderHost Reflex.Global) Physics
+  ) =>
+  game -> GameState game -> IO ()
+run game initialState = runResourceT $ do
   platform <- initPlatform
   gpu <- initGpu "Idunn" 1
   audio <- initAudio
   physics <- initPhysics
   window <- initWindow platform gpu "Idunn" 800 600
-  world <- newWorld gpu
+
+  asyncEvents <- newChan
+  internalState <- getInternalState
+  resources <- initResources
+
+  -- those will be set before first use
+  worldInitRef <- newIORef undefined
+  worldRef <- newIORef undefined
+
+  let appEnv =
+        AppEnv
+          { platform = platform,
+            gpu = gpu,
+            audio = audio,
+            physics = physics,
+            state = internalState,
+            resources = resources,
+            game = game,
+            worldInit = WorldInit worldInitRef
+          }
+
   liftIO $ runSpiderHost $ do
     (ePostBuild, trPostBuild) <- newEventWithTriggerRef
-    let appEnv :: AppEnv (SpiderTimeline Global) = AppEnv platform gpu audio physics
-    (_, FireCommand fire) <- hostPerformEventT $ flip runPostBuildT ePostBuild $ runReaderT app appEnv
+    (_, FireCommand fire) <- hostPerformEventT $ flip runPostBuildT ePostBuild $ flip runTriggerEventT asyncEvents $ runAppT appEnv $ do
+      rec dynGameState <- holdDyn initialState eNextLevel
+          let dynNetwork = ffor dynGameState $ \gameState -> do
+                -- TODO: permanent vs world resources: clean world resources
+                worldTransforms <- newVector 0
+                worldInit <- asks getWorldInit
+                writeIORef worldInit.worldTransforms worldTransforms
+                gameWorld <- initGameWorld $ Proxy @game
+                writeIORef worldRef gameWorld
+                runWith gameWorld $ runGC >> system gameState
+          eeNextLevel <- networkView dynNetwork
+          eNextLevel <- switchHold never eeNextLevel
+      pure ()
+
     addEvent platform.eventsRef trPostBuild ()
+
+    asyncTrigger <- liftIO $ async $ fix $ \loop -> do
+      triggerRefs <- readChan asyncEvents
+      mes <- liftIO $ forM triggerRefs $ \(EventTriggerRef er :=> TriggerInvocation a _) -> do
+        me <- readIORef er
+        pure $ (\e -> e :=> Identity a) <$> me
+      void $ runSpiderHost $ fire (catMaybes mes) $ pure ()
+      forM_ triggerRefs $ \(_ :=> TriggerInvocation _ cb) -> cb
+      loop
+
     fix $ \f -> do
-      shouldExit <- tick platform
+      (shouldExit, deltaTime) <- tick platform
       unless shouldExit $ do
         events <- readIORef platform.eventsRef
         _ <- fire events $ pure ()
-        render window world.gpu
+        gameWorld <- readIORef worldRef
+        runWith gameWorld $ do
+          Time frameStartAt <- get global
+          let frameEndAt = frameStartAt + deltaTime
+          modify global $ \(Time _) -> Time frameEndAt
+          physicsStore :: PhysicsStore Physics <- getStore
+          physicsSystems <- readIORef physicsStore.systems
+          forM_ physicsSystems $ \(APhysicsSystem physicsSystem) -> do
+            let period = 1 / 60
+            let shouldTrigger = floor (frameStartAt / period) /= (floor (frameEndAt / period) :: Integer)
+            when shouldTrigger $ update physicsSystem
+          syncWorldTransforms
+          gpuWorld <- get global
+          render window gpuWorld
         writeIORef platform.eventsRef mempty
         f
+
+    cancel asyncTrigger
   where
     addEvent :: (MonadRef m, MonadIO m) => IORef [DSum tag Identity] -> Ref m (Maybe (tag a)) -> a -> m ()
     addEvent eventsRef trRef val =
       readRef trRef >>= \case
         Nothing -> pure ()
         Just tr -> modifyIORef' eventsRef $ (:) (tr :=> Identity val)
+
+newtype Time = Time Float
+  deriving stock (Show)
+  deriving newtype (Num)
+
+instance Semigroup Time where (<>) = (+)
+
+instance Monoid Time where mempty = 0
+
+instance Component Time where
+  type Storage Time = Apecs.Global Time

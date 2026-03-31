@@ -216,13 +216,32 @@ struct Gpu {
     };
 
   private:
-    Desc *description;
     Handle<Buffer> vertexBuffer;
     Handle<Buffer> indexBuffer;
     Handle<Buffer> indirectBuffer;
     Handle<Buffer> transformBuffer;
     Handle<Buffer> drawBuffer;
     Handle<Pipeline> pipeline;
+    uint32_t vertexSize;
+    uint32_t indexSize;
+    size_t *vertexCount;
+    size_t *indexCount;
+    size_t *meshCount;
+    bool *vertexDirty;
+    bool *indexDirty;
+    bool *meshDirty;
+    bool *transformDirty;
+    void **vertexData;
+    uint32_t **indexData;
+    idunn_gpu_mesh **meshData;
+    float (**transformData)[16];
+    size_t currentVertexCount;
+    size_t currentIndexCount;
+    size_t currentMeshCount;
+    void *currentVertexData;
+    uint32_t *currentIndexData;
+    idunn_gpu_mesh *currentMeshData;
+    float (*currentTransformData)[16];
   };
 
   explicit Gpu(idunn_gpu_config *config);
@@ -250,6 +269,10 @@ struct Gpu {
   auto create(World::Desc *description) -> Handle<World>;
   auto destroy(Handle<World> world) -> void;
   auto destroy(World &world) -> void;
+  auto syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
+  auto syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
+  auto syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void;
+  auto syncTransformBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
 
   auto create(Surface::Desc &description) -> Handle<Surface>;
   auto destroy(Handle<Surface> surface) -> void;

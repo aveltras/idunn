@@ -51,7 +51,9 @@ library
     reflex,
     resourcet,
     text,
+    time,
     unliftio,
+    vector,
 
   extra-libraries:
     Jolt
@@ -66,8 +68,9 @@ library
 
   cc-options:
     -g
-    -O0
+    -O1
     -fno-omit-frame-pointer
+    -std=c23
 
   c-sources:
     vendor/miniaudio/miniaudio.c
@@ -75,7 +78,7 @@ library
   cxx-options:
     -std=c++20
     -g
-    -O0
+    -O1
     -fno-omit-frame-pointer
 
   cxx-sources:
@@ -117,6 +120,7 @@ library
     Idunn.Physics.FFI
     Idunn.Platform
     Idunn.Platform.FFI
+    Idunn.Resource
     Idunn.Vector
     Idunn.World
     Paths_idunn
@@ -133,4 +137,5 @@ executable demo
   other-modules: Paths_idunn
   build-depends:
     base,
+    containers,
     idunn,

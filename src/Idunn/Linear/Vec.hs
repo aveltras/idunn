@@ -18,11 +18,13 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 module Idunn.Linear.Vec
-  ( Vec3,
+  ( Vec3 (..),
     mkVec3,
+    toPtr,
   )
 where
 
+import Foreign.C
 import Foreign.Storable
 import GHC.Exts
 import GHC.IO
@@ -41,6 +43,9 @@ instance Storable Vec3 where
         let s2# = copyAddrToByteArray# addr# marr# 0# 12# s1#
          in case unsafeFreezeByteArray# marr# s2# of
               (# s3#, arr# #) -> (# s3#, Vec3 arr# #)
+
+toPtr :: Vec3 -> Ptr CFloat
+toPtr (Vec3 v#) = Ptr (byteArrayContents# v#)
 
 mkVec3 :: Float -> Float -> Float -> Vec3
 mkVec3 (F# x) (F# y) (F# z) =

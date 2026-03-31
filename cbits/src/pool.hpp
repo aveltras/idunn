@@ -86,7 +86,6 @@ struct Pool {
     freeHead = sSlot.denseIdx;
 
     auto denseIdx = static_cast<uint32_t>(dense.size());
-    LOG_DEBUG("ALLOCATE");
     dense.emplace_back(sparseIdx, std::forward<Args>(args)...);
 
     sSlot.denseIdx = denseIdx;
