@@ -18,13 +18,16 @@
 module Idunn.Gpu
   ( Gpu (..),
     GpuWorld (..),
+    Mesh,
     initGpu,
     initGpuWorld,
+    spawnMesh,
   )
 where
 
+import Control.Monad (forM_)
 import Data.Kind (Type)
-import Data.Text
+import Data.Text hiding (length, show)
 import Data.Text.Foreign qualified as T
 import Data.Void
 import Foreign
@@ -32,8 +35,12 @@ import Foreign.C
 import Foreign.C.ConstPtr
 import Idunn.Gpu.FFI
 import Idunn.Linear.Mat (Mat4x4)
+import Idunn.Logger
 import Idunn.Vector
 import Paths_idunn qualified as Cabal
+import System.Environment (lookupEnv)
+import UnliftIO
+import UnliftIO.Directory (canonicalizePath)
 import UnliftIO.Resource
 
 data Gpu = Gpu
@@ -47,7 +54,10 @@ initGpu appName version = snd <$> allocate up down
       alloca $ \pGpu ->
         alloca $ \pConfig ->
           T.withCString appName $ \c'appName -> do
-            shadersPath <- Cabal.getDataFileName "shaders"
+            mPath <- lookupEnv "IDUNN_SHADERS_PATH"
+            shadersPath <- case mPath of
+              Just path -> canonicalizePath path -- Utilise le chemin personnalisé
+              Nothing -> Cabal.getDataFileName "shaders" -- Fallback sur le comportement Cabal
             withCString shadersPath $ \c'shadersPath -> do
               let config = Idunn_gpu_config (ConstPtr c'appName) version (ConstPtr c'shadersPath)
               poke pConfig config
@@ -60,42 +70,56 @@ data GpuWorld (vertex :: Type) = GpuWorld
     vertices :: PinnedVector vertex,
     indices :: PinnedVector Word32,
     meshes :: PinnedVector Idunn_gpu_mesh,
-    transforms :: PinnedVector Mat4x4,
-    configPtr :: Ptr Idunn_gpu_world_config
+    transforms :: PinnedVector Mat4x4
   }
 
 initGpuWorld :: forall vertex m. (MonadResource m) => Gpu -> PinnedVector vertex -> PinnedVector Word32 -> PinnedVector Idunn_gpu_mesh -> PinnedVector Mat4x4 -> m (GpuWorld vertex)
 initGpuWorld gpu vertices indices meshes transforms = snd <$> allocate up down
   where
     up = alloca $ \pGpuWorld -> do
-      configPtr <- malloc
-      vertexCount <- peek vertices.sizePtr
-      indexCount <- peek indices.sizePtr
-      meshCount <- peek meshes.sizePtr
-      poke configPtr $
-        Idunn_gpu_world_config
-          { idunn_gpu_world_config_vertexSize = fromIntegral vertices.itemSize,
-            idunn_gpu_world_config_vertexCount = vertexCount,
-            idunn_gpu_world_config_vertexData = castPtr @vertex @Void $ dataPtr vertices,
-            idunn_gpu_world_config_indexSize = fromIntegral $ sizeOf @Word32 undefined,
-            idunn_gpu_world_config_indexCount = indexCount,
-            idunn_gpu_world_config_indexData = dataPtr indices,
-            idunn_gpu_world_config_meshCount = meshCount,
-            idunn_gpu_world_config_meshData = dataPtr meshes,
-            idunn_gpu_world_config_transformData = castPtr $ dataPtr transforms
-          }
-      idunn_gpu_world_init gpu.ptr configPtr pGpuWorld
-      handle <- peek pGpuWorld
-      pure $
-        GpuWorld
-          { handle = handle,
-            vertices = vertices,
-            indices = indices,
-            meshes = meshes,
-            transforms = transforms,
-            configPtr = configPtr
-          }
+      alloca $ \configPtr -> do
+        meshPtr <- peek meshes.bufferPtr
+        transformPtr <- peek transforms.bufferPtr
+        poke configPtr $
+          Idunn_gpu_world_config
+            { idunn_gpu_world_config_vertexSize = fromIntegral vertices.itemSize,
+              idunn_gpu_world_config_vertexCount = vertices.sizePtr,
+              idunn_gpu_world_config_vertexData = castPtr @(Ptr vertex) @(Ptr Void) vertices.bufferPtr,
+              idunn_gpu_world_config_indexSize = fromIntegral $ sizeOf @Word32 undefined,
+              idunn_gpu_world_config_indexCount = indices.sizePtr,
+              idunn_gpu_world_config_indexData = indices.bufferPtr,
+              idunn_gpu_world_config_meshCount = meshes.sizePtr,
+              idunn_gpu_world_config_meshData = meshes.bufferPtr,
+              idunn_gpu_world_config_transformData = castPtr transforms.bufferPtr
+            }
+        idunn_gpu_world_init gpu.ptr configPtr pGpuWorld
+        worldHandle <- peek pGpuWorld
+        pure $
+          GpuWorld
+            { handle = worldHandle,
+              vertices = vertices,
+              indices = indices,
+              meshes = meshes,
+              transforms = transforms
+            }
 
     down world = do
-      free world.configPtr
       idunn_gpu_world_uninit gpu.ptr world.handle
+
+newtype Mesh = Mesh Int
+
+spawnMesh :: (MonadIO m, Storable vertex) => GpuWorld vertex -> [vertex] -> [Word32] -> m Mesh
+spawnMesh world vertices indices = liftIO $ do
+  vertexOffset <- fromIntegral <$> peek world.vertices.sizePtr
+  indexOffset <- fromIntegral <$> peek world.indices.sizePtr
+  forM_ vertices $ pushBack world.vertices
+  forM_ indices $ pushBack world.indices
+  meshOffset <- peek world.meshes.sizePtr
+  pushBack world.meshes $
+    Idunn_gpu_mesh
+      { idunn_gpu_mesh_indexOffset = indexOffset,
+        idunn_gpu_mesh_indexCount = fromIntegral $ length indices,
+        idunn_gpu_mesh_vertexOffset = vertexOffset,
+        idunn_gpu_mesh_vertexCount = fromIntegral $ length vertices
+      }
+  pure $ Mesh $ fromIntegral meshOffset

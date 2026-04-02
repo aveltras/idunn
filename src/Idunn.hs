@@ -23,7 +23,9 @@ module Idunn
     module Idunn.Logger,
     module Idunn.Platform,
     module Idunn.Physics,
+    module Idunn.Linear.Mat,
     module Idunn.Linear.Vec,
+    module Idunn.World,
     module Data.Time,
     module Reflex,
     module Reflex.Network,
@@ -42,6 +44,7 @@ import Data.Maybe (catMaybes)
 import Data.Time
 import Idunn.Audio
 import Idunn.Gpu
+import Idunn.Linear.Mat
 import Idunn.Linear.Vec
 import Idunn.Logger
 import Idunn.Physics
@@ -147,7 +150,7 @@ type AppM =
         )
     )
 
-run :: screen -> (screen -> AppM (Event (SpiderTimeline Global) screen)) -> IO ()
+run :: screen -> (screen -> (World Vertex -> AppM (Event (SpiderTimeline Global) screen))) -> IO ()
 run startingScreen screenMapping = runResourceT $ do
   platform <- initPlatform
   gpu <- initGpu "Idunn" 1
@@ -160,15 +163,18 @@ run startingScreen screenMapping = runResourceT $ do
   resources <- initResources
 
   world <- newWorld gpu
+  worldRef <- newIORef world
 
   liftIO $ runSpiderHost $ do
     (ePostBuild, trPostBuild) <- newEventWithTriggerRef
     let appEnv :: AppEnv (SpiderTimeline Global) = AppEnv platform gpu audio physics internalState resources world
     (_, FireCommand fire) <- hostPerformEventT $ flip runPostBuildT ePostBuild $ flip runTriggerEventT asyncEvents $ runAppT appEnv $ do
       rec let eSwitch = switchPromptlyDyn dNextLevel
-          dNextLevel <- networkHold (screenMapping startingScreen) $ ffor eSwitch $ \nextLevel -> do
+          dNextLevel <- networkHold (screenMapping startingScreen world) $ ffor eSwitch $ \nextLevel -> do
             flip runInternalState internalState $ cleanupResources resources
-            screenMapping nextLevel
+            levelWorld <- newWorld gpu
+            oldWorld <- atomicModifyIORef' worldRef $ \currentWorld -> (levelWorld, currentWorld)
+            screenMapping nextLevel world
       pure ()
 
     addEvent platform.eventsRef trPostBuild ()
@@ -187,7 +193,8 @@ run startingScreen screenMapping = runResourceT $ do
       unless shouldExit $ do
         events <- readIORef platform.eventsRef
         _ <- fire events $ pure ()
-        render window world.gpu
+        currentWorld <- readIORef worldRef
+        render window currentWorld.gpu
         writeIORef platform.eventsRef mempty
         f
 

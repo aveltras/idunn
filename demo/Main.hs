@@ -28,8 +28,8 @@ main = run ScreenA $ \case
   ScreenA -> screenA
   ScreenB -> screenB
 
-screenA :: (App t m) => m (Event t Screen)
-screenA = do
+screenA :: (App t m) => World Vertex -> m (Event t Screen)
+screenA world = do
   withPhysicsSystem (Proxy @BroadPhaseLayer) (Proxy @ObjectLayer) $ \physicsSystem -> do
     ePostBuild <- getPostBuild
     currentTime <- liftIO getCurrentTime
@@ -37,6 +37,13 @@ screenA = do
     performEvent_ $ ffor ePhysicsTick $ const $ update physicsSystem
     floorID <- createBody physicsSystem (mkVec3 0 (-1) 0) Static NonMoving $ defaultSettings {halfExtentX = 100, halfExtentY = 1, halfExtentZ = 100}
     -- onContactAdded physicsSystem floorID $ logDebug "FLOOR CONTACT!"
+    nodeID <- liftIO $ spawnNode rootNode identity world
+    setNodeMesh world nodeID
+    childNodeID <- liftIO $ spawnNode nodeID (translate identity $ mkVec3 0 1 0) world
+    setNodeMesh world childNodeID
+    grandChildNodeID <- liftIO $ spawnNode childNodeID (translate identity $ mkVec3 1 0 0) world
+    setNodeMesh world grandChildNodeID
+    syncWorldTransforms world
     sphereID <- createBody physicsSystem (mkVec3 0 100 0) Dynamic Moving $ defaultSettings {radius = 0.5}
     onContactAdded physicsSystem sphereID $ logDebug "SPHERE CONTACT!"
     eKeyE <- subscribe KeyE
@@ -48,8 +55,8 @@ screenA = do
     eKeyX <- subscribe KeyX
     pure $ ScreenB <$ ffilter id eKeyX
 
-screenB :: (App t m) => m (Event t Screen)
-screenB = do
+screenB :: (App t m) => World Vertex -> m (Event t Screen)
+screenB world = do
   ePostBuild <- getPostBuild
   performEvent_ $ ffor ePostBuild $ const $ logInfo "PART B"
   eScancodeW <- subscribe ScancodeW

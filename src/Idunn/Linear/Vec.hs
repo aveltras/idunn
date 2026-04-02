@@ -18,7 +18,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 module Idunn.Linear.Vec
-  ( Vec3,
+  ( Vec3 (..),
     mkVec3,
     toPtr,
   )
@@ -45,7 +45,7 @@ instance Storable Vec3 where
               (# s3#, arr# #) -> (# s3#, Vec3 arr# #)
 
 toPtr :: Vec3 -> Ptr CFloat
-toPtr v = Ptr $ byteArrayContents# $ unsafeCoerce# v
+toPtr (Vec3 v#) = Ptr (byteArrayContents# v#)
 
 mkVec3 :: Float -> Float -> Float -> Vec3
 mkVec3 (F# x) (F# y) (F# z) =

@@ -50,7 +50,6 @@ ConstantBuffer<PushConstants> pushConstants;
     uint baseInstance : SV_StartInstanceLocation) {
   VertexOutput output;
 
-  // printf("\INSTANCE__ID: %i", instanceID);
   float4x4 *transforms = (float4x4 *)pushConstants.transformBuffer;
   Draw *draws = (Draw *)pushConstants.drawBuffer;
   Vertex *vertices = (Vertex *)pushConstants.vertexBuffer;
@@ -60,6 +59,8 @@ ConstantBuffer<PushConstants> pushConstants;
   Draw draw = draws[instanceIdx];
   float4x4 model = transforms[draw.transformId];
   output.position = mul(pushConstants.proj, mul(model, float4(vertex.position, 1.0)));
+  // printf("\nINSTANCE: %i, TRANSLATION: %f, %f, %f", baseInstance, model[0][3], model[1][3], model[2][3]);
+  // printf("\nVertexID: %i, TRANSLATION: %v3f", vertexID, vertex.position.xyz);
 
   return output;
 };

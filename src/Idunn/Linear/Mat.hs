@@ -22,12 +22,14 @@ module Idunn.Linear.Mat
     mkMat4x4,
     identity,
     multiply,
+    translate,
   )
 where
 
 import Foreign.Storable
 import GHC.Exts
 import GHC.IO
+import Idunn.Linear.Vec
 
 data Mat4x4 = Mat4x4 ByteArray#
 
@@ -78,12 +80,10 @@ multiply (Mat4x4 p#) (Mat4x4 l#) = unsafeDupablePerformIO $ IO $ \s0# ->
       let at arr# i# = indexFloatArray# arr# i#
           writeRes# col# row# s# =
             let !val# =
-                  ( ((at p# row#) `timesFloat#` (at l# (col# *# 4#)))
-                      `plusFloat#` ((at p# (4# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 1#)))
-                  )
-                    `plusFloat#` ( ((at p# (8# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 2#)))
-                                     `plusFloat#` ((at p# (12# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 3#)))
-                                 )
+                  ((at p# row#) `timesFloat#` (at l# (col# *# 4#))) -- k=0: P[row,0] * L[0,col]
+                    `plusFloat#` ((at p# (4# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 1#))) -- k=1: P[row,1] * L[1,col]
+                    `plusFloat#` ((at p# (8# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 2#))) -- k=2: P[row,2] * L[2,col]
+                    `plusFloat#` ((at p# (12# +# row#)) `timesFloat#` (at l# (col# *# 4# +# 3#))) -- k=3: P[row,3] * L[3,col]
              in writeFloatArray# marr# (col# *# 4# +# row#) val# s#
           s2 = writeRes# 0# 0# s1#
           s3 = writeRes# 0# 1# s2
@@ -103,3 +103,21 @@ multiply (Mat4x4 p#) (Mat4x4 l#) = unsafeDupablePerformIO $ IO $ \s0# ->
           s17 = writeRes# 3# 3# s16
        in case unsafeFreezeByteArray# marr# s17 of
             (# s18#, res# #) -> (# s18#, Mat4x4 res# #)
+
+translate :: Mat4x4 -> Vec3 -> Mat4x4
+translate (Mat4x4 m#) (Vec3 v#) =
+  unsafeDupablePerformIO $ IO $ \s0# ->
+    case newAlignedPinnedByteArray# 64# 16# s0# of
+      (# s1#, marr# #) ->
+        let s2# = copyByteArray# m# 0# marr# 0# 64# s1#
+            vx# = indexFloatArray# v# 0#
+            vy# = indexFloatArray# v# 1#
+            vz# = indexFloatArray# v# 2#
+            mx# = indexFloatArray# m# 12#
+            my# = indexFloatArray# m# 13#
+            mz# = indexFloatArray# m# 14#
+            s3# = writeFloatArray# marr# 12# (mx# `plusFloat#` vx#) s2#
+            s4# = writeFloatArray# marr# 13# (my# `plusFloat#` vy#) s3#
+            s5# = writeFloatArray# marr# 14# (mz# `plusFloat#` vz#) s4#
+         in case unsafeFreezeByteArray# marr# s5# of
+              (# s6#, res# #) -> (# s6#, Mat4x4 res# #)

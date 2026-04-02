@@ -20,20 +20,24 @@ module Idunn.World
     HasWorld (..),
     Vertex,
     newWorld,
+    rootNode,
     spawnNode,
+    setNodeMesh,
     syncWorldTransforms,
   )
 where
 
-import Control.Monad (foldM, forM_, unless, void)
+import Control.Monad (forM_, unless, void)
+import Data.IntMap.Strict (IntMap)
+import Data.IntMap.Strict qualified as IntMap
 import Data.Vector.Generic.Mutable qualified as MV
 import Data.Vector.Mutable (MVector)
 import Foreign (Storable)
 import GHC.Exts (RealWorld)
 import Idunn.Gpu
-import Idunn.Gpu.FFI
 import Idunn.Linear.Mat
 import Idunn.Linear.Vec
+import Idunn.Logger
 import Idunn.Vector
 import UnliftIO
 import UnliftIO.Resource
@@ -46,6 +50,7 @@ data World vertex = World
     nodes :: IORef (MVector RealWorld Node),
     currentMaxLevel :: IORef Int,
     dirtyNodes :: IORef (MVector RealWorld (Int, MVector RealWorld Int)),
+    nodeMeshes :: IORef (IntMap Mesh),
     worldTransforms :: PinnedVector Mat4x4,
     localTransforms :: PinnedVector Mat4x4
   }
@@ -55,85 +60,86 @@ newtype Vertex = Vertex Vec3
 
 newWorld :: (MonadResource m) => Gpu -> m (World Vertex)
 newWorld gpu = do
-  vertices <- liftIO $ do
-    v0 <- newVector 0
-    foldM
-      pushBack
-      v0
-      [ Vertex $ mkVec3 (-1) (-1) 1,
-        Vertex $ mkVec3 1 (-1) 1,
-        Vertex $ mkVec3 1 1 1,
-        Vertex $ mkVec3 (-1) 1 1
-      ]
-
-  indices <- liftIO $ do
-    i0 <- newVector 0
-    foldM pushBack i0 [0, 1, 2, 0, 2, 3]
-
-  meshes <- liftIO $ do
-    m0 <- newVector 1
-    pushBack m0 $ Idunn_gpu_mesh 0 6 0 4
-
   nodes <- liftIO $ newIORef =<< MV.new 0
   dirtyNodes <- liftIO $ newIORef =<< MV.new 0
-  currentMaxLevel <- newIORef 0
-  worldTransforms <- liftIO $ newVector 10
-  localTransforms <- liftIO $ newVector 10
+  currentMaxLevel <- newIORef (-1)
+  worldTransforms <- liftIO $ newVector 0
+  localTransforms <- liftIO $ newVector 0
+  meshes <- liftIO $ newVector 0
+  vertices <- liftIO $ newVector 0
+  indices <- liftIO $ newVector 0
   gpuWorld <- initGpuWorld gpu vertices indices meshes worldTransforms
-
+  nodeMeshes <- newIORef mempty
   pure $
     World
       { gpu = gpuWorld,
         nodes = nodes,
         currentMaxLevel = currentMaxLevel,
         dirtyNodes = dirtyNodes,
+        nodeMeshes = nodeMeshes,
         worldTransforms = worldTransforms,
         localTransforms = localTransforms
       }
 
 newtype NodeID = NodeID Int
+  deriving newtype (Eq, Ord)
+
+rootNode :: NodeID
+rootNode = NodeID (-1)
 
 data Node = Node
   { parent :: Int,
     firstChild :: Int,
     nextSibling :: Int,
-    lastSibling :: Int,
     level :: Int
   }
 
-spawnNode :: NodeID -> Mat4x4 -> World Vertex -> IO NodeID
+setNodeMesh :: (MonadIO m) => World Vertex -> NodeID -> m ()
+setNodeMesh world (NodeID nodeIdx) = do
+  mesh <- spawnMesh world.gpu vertices indices
+  atomicModifyIORef' world.nodeMeshes $ \mapping -> (IntMap.insert nodeIdx mesh mapping, ())
+  where
+    indices = [0, 1, 2, 0, 2, 3]
+    vertices =
+      [ Vertex $ mkVec3 (-1) (-1) 1,
+        Vertex $ mkVec3 1 (-1) 1,
+        Vertex $ mkVec3 1 1 1,
+        Vertex $ mkVec3 (-1) 1 1
+      ]
+
+spawnNode :: (MonadIO m, MV.PrimState m ~ RealWorld, MV.PrimMonad m) => NodeID -> Mat4x4 -> World Vertex -> m NodeID
 spawnNode (NodeID parent) localTransform world = do
-  void $ pushBack world.localTransforms localTransform
-  void $ pushBack world.worldTransforms identity
+  liftIO $ pushBack world.localTransforms localTransform
+  liftIO $ pushBack world.worldTransforms identity
   previousNodes <- readIORef world.nodes
   let nodeIdx = MV.length previousNodes
   nodes <- MV.unsafeGrow previousNodes 1
-  parentNode <- MV.unsafeRead nodes parent
-  if parentNode.firstChild == -1
-    then MV.unsafeModify nodes (\n -> n {firstChild = nodeIdx}) parent
-    else do
-      let updateChild childIdx = do
-            childNode <- MV.unsafeRead nodes childIdx
-            if childNode.nextSibling == -1
-              then MV.unsafeWrite nodes childIdx $ childNode {lastSibling = nodeIdx, nextSibling = nodeIdx}
-              else do
-                MV.unsafeWrite nodes childIdx $ childNode {lastSibling = nodeIdx}
-                updateChild childNode.nextSibling
-      updateChild parentNode.firstChild
-  let level = parentNode.level + 1
+  level <-
+    if parent == -1
+      then pure 0
+      else do
+        parentNode <- MV.unsafeRead nodes parent
+        if parentNode.firstChild == -1
+          then MV.unsafeModify nodes (\n -> n {firstChild = nodeIdx}) parent
+          else do
+            let updateChild childIdx = do
+                  childNode <- MV.unsafeRead nodes childIdx
+                  if childNode.nextSibling == -1
+                    then MV.unsafeWrite nodes childIdx $ childNode {nextSibling = nodeIdx}
+                    else updateChild childNode.nextSibling
+            updateChild parentNode.firstChild
+        pure $ parentNode.level + 1
   MV.unsafeWrite nodes nodeIdx $
     Node
       { parent = parent,
         firstChild = -1,
         nextSibling = -1,
-        lastSibling = -1,
         level = level
       }
   writeIORef world.nodes nodes
   let nodeID = NodeID nodeIdx
-
   currentMaxLevel <- readIORef world.currentMaxLevel
-  if currentMaxLevel > level
+  if currentMaxLevel >= level
     then markDirty world nodeID
     else do
       previousDirtyNodes <- readIORef world.dirtyNodes
@@ -141,10 +147,11 @@ spawnNode (NodeID parent) localTransform world = do
       newLevelNodes <- MV.replicateM 1 $ pure nodeIdx
       MV.unsafeWrite dirtyNodes level (1, newLevelNodes)
       writeIORef world.dirtyNodes dirtyNodes
+      writeIORef world.currentMaxLevel $ currentMaxLevel + 1
 
   pure nodeID
 
-markDirty :: World Vertex -> NodeID -> IO ()
+markDirty :: (MonadIO m, MV.PrimState m ~ RealWorld, MV.PrimMonad m) => World Vertex -> NodeID -> m ()
 markDirty world (NodeID nodeIdx) = do
   nodes <- readIORef world.nodes
   dirtyNodes <- readIORef world.dirtyNodes
@@ -156,21 +163,25 @@ markDirty world (NodeID nodeIdx) = do
       else pure levelDirtyNodes
   MV.unsafeWrite levelDirtyNodes' size nodeIdx
   MV.unsafeWrite dirtyNodes node.level (size + 1, levelDirtyNodes')
-  let markDirtyChild childIdx = do
-        childNode <- MV.unsafeRead nodes childIdx
-        markDirty world $ NodeID childIdx
-        unless (childNode.nextSibling == -1) $ markDirtyChild childNode.nextSibling
-  markDirtyChild node.firstChild
+  -- let markDirtyChild childIdx = do
+  --       childNode <- MV.unsafeRead nodes childIdx
+  --       markDirty world $ NodeID childIdx
+  --       unless (childNode.nextSibling == -1) $ markDirtyChild childNode.nextSibling
+  unless (node.firstChild == -1) $
+    markDirty world (NodeID node.firstChild)
+  -- markDirtyChild node.firstChild
+  unless (node.nextSibling == -1) $
+    markDirty world (NodeID node.nextSibling)
 
-syncWorldTransforms :: World Vertex -> IO ()
-syncWorldTransforms world = do
+syncWorldTransforms :: (MonadIO m) => World Vertex -> m ()
+syncWorldTransforms world = liftIO $ do
   nodes <- readIORef world.nodes
   dirtyNodes <- readIORef world.dirtyNodes
   currentMaxLevel <- readIORef world.currentMaxLevel
-  forM_ [0 .. currentMaxLevel] $ \level -> do
+  forM_ [1 .. currentMaxLevel] $ \level -> do
     (size, levelDirtyNodes) <- MV.unsafeRead dirtyNodes level
     unless (size == 0) $ do
-      forM_ [0 .. size] $ \offset -> do
+      forM_ [0 .. size - 1] $ \offset -> do
         nodeIdx <- MV.unsafeRead levelDirtyNodes offset
         node <- MV.unsafeRead nodes nodeIdx
         parentWorldTransform <- readIndex world.worldTransforms node.parent

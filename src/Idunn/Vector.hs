@@ -19,77 +19,104 @@
 
 module Idunn.Vector where
 
+import Control.Monad (when)
+import Data.IORef
 import Foreign
 import Foreign.C
 import GHC.Exts
 import GHC.IO
 
+data MutableBuffer = MutableBuffer (MutableByteArray# RealWorld)
+
 data PinnedVector a = PinnedVector
-  { buffer :: MutableByteArray# RealWorld,
+  { bufferPtr :: Ptr (Ptr a),
     sizePtr :: Ptr CSize,
     capPtr :: Ptr CSize,
-    itemSize :: CSize
+    itemSize :: CSize,
+    bufferRef :: IORef MutableBuffer
   }
 
-dataPtr :: PinnedVector a -> Ptr a
-dataPtr v = Ptr $ byteArrayContents# $ unsafeCoerce# $ buffer v
+dataPtr :: PinnedVector a -> IO (Ptr a)
+dataPtr v = peek v.bufferPtr
+
+getRawPtr :: MutableBuffer -> Ptr a
+getRawPtr (MutableBuffer m#) = Ptr $ byteArrayContents# $ unsafeCoerce# m#
 
 newVector :: forall a. (Storable a) => CSize -> IO (PinnedVector a)
-newVector initialCapacity = IO $ \s0# ->
-  let bytesPerItem = sizeOf @a undefined
-      !(I# totalBytes#) = fromIntegral initialCapacity * bytesPerItem
-   in case newPinnedByteArray# totalBytes# s0# of
-        (# s1#, marr# #) ->
-          case unIO malloc s1# of
-            (# s2#, pSize #) ->
-              case unIO malloc s2# of
-                (# s3#, pCap #) ->
-                  case unIO (poke pSize 0) s3# of
-                    (# s4#, _ #) ->
-                      case unIO (poke pCap initialCapacity) s4# of
-                        (# s5#, _ #) ->
-                          (# s5#, PinnedVector marr# pSize pCap (fromIntegral bytesPerItem) #)
+newVector initialCapacity = do
+  let bytesPerItem = fromIntegral $ sizeOf @a undefined
+  let totalBytes = initialCapacity * bytesPerItem
+
+  buf <- IO $ \s# ->
+    case newPinnedByteArray# (unI# (fromIntegral totalBytes)) s# of
+      (# s1#, m# #) -> (# s1#, MutableBuffer m# #)
+
+  pBuf <- malloc
+  pSize <- malloc
+  pCap <- malloc
+
+  poke pBuf $ getRawPtr buf
+  poke pSize 0
+  poke pCap initialCapacity
+
+  ref <- newIORef buf
+
+  pure
+    PinnedVector
+      { bufferPtr = pBuf,
+        sizePtr = pSize,
+        capPtr = pCap,
+        itemSize = bytesPerItem,
+        bufferRef = ref
+      }
 
 freeVector :: PinnedVector a -> IO ()
 freeVector v = do
   free v.sizePtr
   free v.capPtr
 
-resize :: PinnedVector a -> CSize -> IO (PinnedVector a)
-resize v newCapacity = do
-  currentSize <- cap v
-  IO $ \s0# -> do
-    let !(I# newBytes#) = fromIntegral $ newCapacity * v.itemSize
-        !(I# oldBytes#) = fromIntegral $ currentSize * v.itemSize
-     in case newPinnedByteArray# newBytes# s0# of
-          (# s1#, newMarr# #) ->
-            let s2# = copyMutableByteArray# (buffer v) 0# newMarr# 0# oldBytes# s1#
-             in case unIO (poke (capPtr v) newCapacity) s2# of
-                  (# s3#, _ #) -> (# s3#, v {buffer = newMarr#} #)
+unI# :: Int -> Int#
+unI# (I# i) = i
 
-pushBack :: forall a. (Storable a) => PinnedVector a -> a -> IO (PinnedVector a)
+resize :: PinnedVector a -> CSize -> IO ()
+resize v newCapacity = do
+  currentSize <- peek v.sizePtr
+  oldData <- peek v.bufferPtr
+  let newBytes = newCapacity * v.itemSize
+  let oldBytes = currentSize * v.itemSize
+  IO $ \s0# ->
+    case newPinnedByteArray# (unI# (fromIntegral newBytes)) s0# of
+      (# s1#, newMarr# #) -> do
+        let newPData = Ptr (byteArrayContents# (unsafeCoerce# newMarr#))
+        let s2# = copyAddrToByteArray# (case oldData of Ptr a# -> a#) newMarr# 0# (unI# (fromIntegral oldBytes)) s1#
+        unIO
+          ( do
+              poke v.bufferPtr newPData
+              poke v.capPtr newCapacity
+          )
+          s2#
+
+pushBack :: (Storable a) => PinnedVector a -> a -> IO ()
 pushBack v item = do
   sz <- peek v.sizePtr
   cp <- peek v.capPtr
-  v' <-
-    if sz >= cp
-      then resize v (if cp == 0 then 1 else cp * 2)
-      else pure v
-  let baseAddr = Ptr (byteArrayContents# (unsafeCoerce# (buffer v')))
-      destAddr = baseAddr `plusPtr` fromIntegral (sz * v'.itemSize)
+  when (sz >= cp) $ resize v $ if cp == 0 then 1 else cp * 2
+  pData <- peek v.bufferPtr
+  let destAddr = pData `plusPtr` fromIntegral (sz * v.itemSize)
   poke destAddr item
-  poke v'.sizePtr $ sz + 1
-  pure v'
+  poke v.sizePtr (sz + 1)
 
 cap :: PinnedVector a -> IO CSize
 cap v = peek (capPtr v)
 
 {-# INLINE readIndex #-}
 readIndex :: (Storable a) => PinnedVector a -> Int -> IO a
-readIndex v (I# i#) = IO $ \s# -> unIO (peekElemOff (dataPtr v) (I# i#)) s#
+readIndex v (I# i#) = do
+  ptr <- dataPtr v
+  IO $ \s# -> unIO (peekElemOff ptr (I# i#)) s#
 
 {-# INLINE writeIndex #-}
 writeIndex :: (Storable a) => PinnedVector a -> Int -> a -> IO ()
 writeIndex v idx item = do
-  let ptr = dataPtr v
+  ptr <- dataPtr v
   pokeElemOff ptr idx item

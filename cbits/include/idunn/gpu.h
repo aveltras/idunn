@@ -44,14 +44,14 @@ typedef struct idunn_gpu_mesh {
 
 typedef struct idunn_gpu_world_config {
   uint32_t vertexSize;
-  size_t vertexCount;
-  void *vertexData;
+  size_t *vertexCount;
+  void **vertexData;
   uint32_t indexSize;
-  size_t indexCount;
-  uint32_t *indexData;
-  size_t meshCount;
-  idunn_gpu_mesh *meshData;
-  float (*transformData)[16];
+  size_t *indexCount;
+  uint32_t **indexData;
+  size_t *meshCount;
+  idunn_gpu_mesh **meshData;
+  float (**transformData)[16];
 } idunn_gpu_world_config;
 
 void idunn_gpu_world_init(void *gpu, idunn_gpu_world_config *config, uint64_t *pWorldHandle);
