@@ -165,9 +165,19 @@ run startingScreen screenMapping = runResourceT $ do
   world <- newWorld gpu
   worldRef <- newIORef world
 
+  let appEnv =
+        AppEnv
+          { platform = platform,
+            gpu = gpu,
+            audio = audio,
+            physics = physics,
+            state = internalState,
+            resources = resources,
+            world = world
+          }
+
   liftIO $ runSpiderHost $ do
     (ePostBuild, trPostBuild) <- newEventWithTriggerRef
-    let appEnv :: AppEnv (SpiderTimeline Global) = AppEnv platform gpu audio physics internalState resources world
     (_, FireCommand fire) <- hostPerformEventT $ flip runPostBuildT ePostBuild $ flip runTriggerEventT asyncEvents $ runAppT appEnv $ do
       rec let eSwitch = switchPromptlyDyn dNextLevel
           dNextLevel <- networkHold (screenMapping startingScreen world) $ ffor eSwitch $ \nextLevel -> do

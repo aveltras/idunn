@@ -56,8 +56,8 @@ initGpu appName version = snd <$> allocate up down
           T.withCString appName $ \c'appName -> do
             mPath <- lookupEnv "IDUNN_SHADERS_PATH"
             shadersPath <- case mPath of
-              Just path -> canonicalizePath path -- Utilise le chemin personnalisé
-              Nothing -> Cabal.getDataFileName "shaders" -- Fallback sur le comportement Cabal
+              Just path -> canonicalizePath path
+              Nothing -> Cabal.getDataFileName "shaders"
             withCString shadersPath $ \c'shadersPath -> do
               let config = Idunn_gpu_config (ConstPtr c'appName) version (ConstPtr c'shadersPath)
               poke pConfig config

@@ -19,5 +19,8 @@ asan:
 watch:
     ghciwatch --command "cabal v2-repl --ghc-options='-fobject-code' --enable-multi-repl idunn demo" --watch src --watch demo
 
+debug:
+    ghciwatch --command "cabal v2-repl --ghc-options='-fobject-code' --enable-multi-repl idunn demo" --watch src --watch demo --test-ghci Idunn.World.debug
+
 renderdoc: build
     [ -f idunn.cap ] && qrenderdoc idunn.cap || qrenderdoc

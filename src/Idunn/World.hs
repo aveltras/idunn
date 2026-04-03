@@ -14,11 +14,15 @@
  You should have received a copy of the GNU Affero General Public License
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Idunn.World
   ( World (..),
     HasWorld (..),
     Vertex,
+    debug,
     newWorld,
     rootNode,
     spawnNode,
@@ -27,9 +31,12 @@ module Idunn.World
   )
 where
 
+import Apecs
+import Apecs.Core
 import Control.Monad (forM_, unless, void)
 import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
+import Data.Maybe (fromMaybe)
 import Data.Vector.Generic.Mutable qualified as MV
 import Data.Vector.Mutable (MVector)
 import Foreign (Storable)
@@ -41,6 +48,130 @@ import Idunn.Logger
 import Idunn.Vector
 import UnliftIO
 import UnliftIO.Resource
+
+data Node = Node
+  { parent :: Int,
+    firstChild :: Int,
+    nextSibling :: Int,
+    level :: Int
+  }
+
+data Transform = Transform (Maybe Node3D) Mat4x4
+
+instance Component Transform where
+  type Storage Transform = Nodes Transform
+
+instance (MonadIO m, Has w m Node3D) => Has w m Transform where
+  getStore = (cast :: Nodes Node3D -> Nodes Transform) <$> getStore
+
+type instance Elem (Nodes Transform) = Transform
+
+instance (MonadIO m) => ExplGet m (Nodes Node3D) where
+  explGet nodes entity = liftIO $ do
+    mapping <- readIORef nodes.mapping
+    pure $ Node3D $ mapping IntMap.! entity
+  explExists nodes entity = liftIO $ do
+    mapping <- readIORef nodes.mapping
+    pure $ IntMap.member entity mapping
+
+instance (MonadIO m) => ExplSet m (Nodes Transform) where
+  explSet nodes entity (Transform mParent localTransform) = liftIO $ do
+    pushBack nodes.localTransforms localTransform
+    pushBack nodes.worldTransforms identity
+    currentHierarchy <- readIORef nodes.hierarchy
+    let nodeIdx = MV.length currentHierarchy
+    newHierarchy <- MV.unsafeGrow currentHierarchy 1
+    atomicModifyIORef' nodes.mapping $ \mapping -> (IntMap.insert entity nodeIdx mapping, ())
+    let nodeID = Node3D nodeIdx
+    level <-
+      case mParent of
+        Nothing -> pure 0
+        Just (Node3D parent) -> do
+          parentNode <- MV.unsafeRead newHierarchy parent
+          if parentNode.firstChild == -1
+            then MV.unsafeModify newHierarchy (\n -> n {firstChild = nodeIdx}) parent
+            else do
+              let updateChild childIdx = do
+                    childNode <- MV.unsafeRead newHierarchy childIdx
+                    if childNode.nextSibling == -1
+                      then MV.unsafeWrite newHierarchy childIdx $ childNode {nextSibling = nodeIdx}
+                      else updateChild childNode.nextSibling
+              updateChild parentNode.firstChild
+          pure $ parentNode.level + 1
+    MV.unsafeWrite newHierarchy nodeIdx $ Node (maybe (-1) unNode3D mParent) (-1) (-1) level
+    writeIORef nodes.hierarchy newHierarchy
+    currentMaxLevel <- readIORef nodes.currentMaxLevel
+    if currentMaxLevel >= level
+      then markDirty nodeID
+      else do
+        previousDirtyNodes <- readIORef nodes.dirtyNodes
+        dirtyNodes <- MV.unsafeGrow previousDirtyNodes 1
+        newLevelNodes <- MV.replicateM 1 $ pure nodeIdx
+        MV.unsafeWrite dirtyNodes level (1, newLevelNodes)
+        writeIORef nodes.dirtyNodes dirtyNodes
+        writeIORef nodes.currentMaxLevel $ currentMaxLevel + 1
+    where
+      markDirty (Node3D nodeIdx) = do
+        hierarchy <- readIORef nodes.hierarchy
+        dirtyNodes <- readIORef nodes.dirtyNodes
+        node <- MV.unsafeRead hierarchy nodeIdx
+        (size, levelDirtyNodes) <- MV.unsafeRead dirtyNodes node.level
+        levelDirtyNodes' <-
+          if MV.length levelDirtyNodes == size
+            then MV.unsafeGrow levelDirtyNodes 1
+            else pure levelDirtyNodes
+        MV.unsafeWrite levelDirtyNodes' size nodeIdx
+        MV.unsafeWrite dirtyNodes node.level (size + 1, levelDirtyNodes')
+        -- let markDirtyChild childIdx = do
+        --       childNode <- MV.unsafeRead nodes childIdx
+        --       markDirty world $ NodeID childIdx
+        --       unless (childNode.nextSibling == -1) $ markDirtyChild childNode.nextSibling
+        unless (node.firstChild == -1) $
+          markDirty (Node3D node.firstChild)
+        -- markDirtyChild node.firstChild
+        unless (node.nextSibling == -1) $
+          markDirty (Node3D node.nextSibling)
+
+newtype WorldTransform = WorldTransform Mat4x4
+
+instance Component WorldTransform where
+  type Storage WorldTransform = Nodes WorldTransform
+
+instance (MonadIO m, Has w m Node3D) => Has w m WorldTransform where
+  getStore = (cast :: Nodes Node3D -> Nodes WorldTransform) <$> getStore
+
+type instance Elem (Nodes WorldTransform) = WorldTransform
+
+data Nodes c = Nodes
+  { hierarchy :: IORef (MVector RealWorld Node),
+    dirtyNodes :: IORef (MVector RealWorld (Int, MVector RealWorld Int)),
+    mapping :: IORef (IntMap Int),
+    currentMaxLevel :: IORef Int,
+    localTransforms :: PinnedVector Mat4x4,
+    worldTransforms :: PinnedVector Mat4x4
+  }
+
+cast :: Nodes a -> Nodes b
+cast (Nodes a b c d e f) = Nodes a b c d e f
+
+newtype Node3D = Node3D
+  { unNode3D :: Int
+  }
+
+instance Component Node3D where
+  type Storage Node3D = Nodes Node3D
+
+type instance Elem (Nodes Node3D) = Node3D
+
+instance (MonadIO m) => ExplInit m (Nodes Node3D) where
+  explInit = liftIO $ do
+    hierarchy <- newIORef =<< MV.new 0
+    dirtyNodes <- liftIO $ newIORef =<< MV.new 0
+    mapping <- newIORef mempty
+    currentMaxLevel <- newIORef (-1)
+    localTransforms <- newVector 0
+    worldTransforms <- newVector 0
+    pure $ Nodes hierarchy dirtyNodes mapping currentMaxLevel localTransforms worldTransforms
 
 class HasWorld env where
   getWorld :: env -> World Vertex
@@ -86,13 +217,6 @@ newtype NodeID = NodeID Int
 
 rootNode :: NodeID
 rootNode = NodeID (-1)
-
-data Node = Node
-  { parent :: Int,
-    firstChild :: Int,
-    nextSibling :: Int,
-    level :: Int
-  }
 
 setNodeMesh :: (MonadIO m) => World Vertex -> NodeID -> m ()
 setNodeMesh world (NodeID nodeIdx) = do
@@ -188,4 +312,39 @@ syncWorldTransforms world = liftIO $ do
         localTransform <- readIndex world.localTransforms nodeIdx
         let worldTransform = multiply parentWorldTransform localTransform
         writeIndex world.worldTransforms nodeIdx worldTransform
+      MV.unsafeWrite dirtyNodes level (0, levelDirtyNodes)
+
+makeWorld "Toc" [''Node3D]
+
+debug :: IO ()
+debug = do
+  world <- initToc
+  runSystem game world
+
+game :: System Toc ()
+game = do
+  root <- newEntity (Transform Nothing identity)
+  rootNode3D :: Node3D <- get root
+  parent <- newEntity (Transform (Just rootNode3D) identity)
+  parentNode3D :: Node3D <- get parent
+  child <- newEntity (Transform (Just parentNode3D) identity)
+  childNode3D :: Node3D <- get child
+  liftIO $ print @String "debugOK"
+
+syncWorldTransforms' :: System Toc ()
+syncWorldTransforms' = do
+  nodes :: Nodes Transform <- getStore
+  hierarchy <- readIORef nodes.hierarchy
+  dirtyNodes <- readIORef nodes.dirtyNodes
+  currentMaxLevel <- readIORef nodes.currentMaxLevel
+  forM_ [1 .. currentMaxLevel] $ \level -> liftIO $ do
+    (size, levelDirtyNodes) <- MV.unsafeRead dirtyNodes level
+    unless (size == 0) $ do
+      forM_ [0 .. size - 1] $ \offset -> do
+        nodeIdx <- MV.unsafeRead levelDirtyNodes offset
+        node <- MV.unsafeRead hierarchy nodeIdx
+        parentWorldTransform <- readIndex nodes.worldTransforms node.parent
+        localTransform <- readIndex nodes.localTransforms nodeIdx
+        let worldTransform = multiply parentWorldTransform localTransform
+        writeIndex nodes.worldTransforms nodeIdx worldTransform
       MV.unsafeWrite dirtyNodes level (0, levelDirtyNodes)
