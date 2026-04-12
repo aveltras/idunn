@@ -20,9 +20,13 @@
 
 module Main where
 
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
+import Data.Functor ((<&>))
 import Data.Proxy
-import Idunn
+import Data.Set (Set)
+import Data.Set qualified as Set
+import Idunn hiding (Set)
 import Paths_idunn qualified as Cabal
 
 makeWorld "World" [''Node3D, ''GpuWorld]
@@ -39,6 +43,13 @@ instance Game MyGame where
 
 main :: IO ()
 main = run MyGame ScreenA
+
+data Move
+  = MoveLeft
+  | MoveRight
+  | MoveUp
+  | MoveDown
+  deriving stock (Eq, Ord)
 
 screenA :: (App t m MyGame) => SystemT World m (Event t (GameState MyGame))
 screenA = do
@@ -63,9 +74,30 @@ screenA = do
   parentNode3D <- get parent
   child <- newEntity (Transform (Just parentNode3D) $ translate identity $ mkVec3 1 0 0, GpuMesh vertices indices)
 
-  eTick <- tickLossyFrom (1 / 20) currentTime ePostBuild
-  performEvent_ $ ffor eTick $ const $ do
-    modify parent $ \(LocalTransform transform) -> (LocalTransform $ translate transform $ mkVec3 0.01 0 0)
+  eScancodeW <- subscribe ScancodeW
+  eScancodeA <- subscribe ScancodeA
+  eScancodeS <- subscribe ScancodeS
+  eScancodeD <- subscribe ScancodeD
+
+  dynMove <-
+    foldDyn ($) mempty $
+      mergeWith
+        (.)
+        [ eScancodeW <&> \pressed -> if pressed then Set.insert MoveUp else Set.delete MoveUp,
+          eScancodeA <&> \pressed -> if pressed then Set.insert MoveLeft else Set.delete MoveLeft,
+          eScancodeS <&> \pressed -> if pressed then Set.insert MoveDown else Set.delete MoveDown,
+          eScancodeD <&> \pressed -> if pressed then Set.insert MoveRight else Set.delete MoveRight
+        ]
+
+  eTick <- tickLossyFrom (1 / 60) currentTime ePostBuild
+  performEvent_ $ ffor (tagPromptlyDyn dynMove eTick) $ \moves -> do
+    let moveX = if Set.member MoveLeft moves then (-1) else 0
+    let moveX' = moveX + if Set.member MoveRight moves then 1 else 0
+    let moveY = if Set.member MoveUp moves then 1 else 0
+    let moveY' = moveY + if Set.member MoveDown moves then (-1) else 0
+    when (moveX' /= 0 || moveY' /= 0) $
+      modify parent $
+        \(LocalTransform transform) -> (LocalTransform $ translate transform $ mkVec3 (moveX' * 0.05) (moveY' * 0.05) 0)
 
   -- root $= GpuMesh vertices indices
   -- setNodeMesh root

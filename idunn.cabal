@@ -137,4 +137,5 @@ executable demo
   other-modules: Paths_idunn
   build-depends:
     base,
+    containers,
     idunn,
