@@ -50,7 +50,7 @@ newVector initialCapacity = liftIO $ do
   let totalBytes = initialCapacity * bytesPerItem
 
   buf <- IO $ \s# ->
-    case newPinnedByteArray# (unI# (fromIntegral totalBytes)) s# of
+    case newAlignedPinnedByteArray# (unI# (fromIntegral totalBytes)) 16# s# of
       (# s1#, m# #) -> (# s1#, MutableBuffer m# #)
 
   pBuf <- malloc
@@ -79,6 +79,8 @@ freeVector :: PinnedVector a -> IO ()
 freeVector v = do
   free v.sizePtr
   free v.capPtr
+  free v.bufferPtr
+  free v.dirtyPtr
 
 unI# :: Int -> Int#
 unI# (I# i) = i
@@ -90,7 +92,7 @@ resize v newCapacity = do
   let newBytes = newCapacity * v.itemSize
   let oldBytes = currentSize * v.itemSize
   IO $ \s0# ->
-    case newPinnedByteArray# (unI# (fromIntegral newBytes)) s0# of
+    case newAlignedPinnedByteArray# (unI# (fromIntegral newBytes)) 16# s0# of
       (# s1#, newMarr# #) -> do
         let newPData = Ptr (byteArrayContents# (unsafeCoerce# newMarr#))
         let s2# = copyAddrToByteArray# (case oldData of Ptr a# -> a#) newMarr# 0# (unI# (fromIntegral oldBytes)) s1#
@@ -98,6 +100,7 @@ resize v newCapacity = do
           ( do
               poke v.bufferPtr newPData
               poke v.capPtr newCapacity
+              writeIORef v.bufferRef (MutableBuffer newMarr#)
           )
           s2#
 

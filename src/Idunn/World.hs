@@ -79,7 +79,6 @@ instance (MonadIO m) => ExplGet m (Nodes LocalTransform) where
   explGet store entity = liftIO $ do
     mapping <- readIORef store.mapping
     let nodeIdx = mapping IntMap.! entity
-    print ("get" :: String, nodeIdx)
     currentLocalTransform <- readIndex store.localTransforms nodeIdx
     pure $ LocalTransform currentLocalTransform
 

@@ -63,9 +63,9 @@ screenA = do
   parentNode3D <- get parent
   child <- newEntity (Transform (Just parentNode3D) $ translate identity $ mkVec3 1 0 0, GpuMesh vertices indices)
 
-  eTick <- tickLossyFrom 1 currentTime ePostBuild
+  eTick <- tickLossyFrom (1 / 20) currentTime ePostBuild
   performEvent_ $ ffor eTick $ const $ do
-    modify parent $ \(LocalTransform transform) -> (LocalTransform $ translate transform $ mkVec3 0.1 0 0)
+    modify parent $ \(LocalTransform transform) -> (LocalTransform $ translate transform $ mkVec3 0.01 0 0)
 
   -- root $= GpuMesh vertices indices
   -- setNodeMesh root
