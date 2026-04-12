@@ -21,6 +21,7 @@ module Idunn.Platform
   ( Platform (..),
     HasPlatform (..),
     initPlatform,
+    Window,
     initWindow,
     render,
     subscribe,
@@ -529,6 +530,7 @@ module Idunn.Platform
   )
 where
 
+import Apecs hiding (Map, asks)
 import Control.Monad (unless, when)
 import Control.Monad.Reader
 import Data.Dependent.Sum
@@ -633,7 +635,7 @@ initWindow platform gpu title width height = snd <$> allocate up down
           Window <$> peek pWindow
     down window = idunn_platform_window_uninit window.ptr
 
-render :: (MonadIO m) => Window -> GpuWorld vertex -> m ()
+render :: (MonadIO m) => Window -> GpuWorld -> m ()
 render window world = liftIO $ idunn_platform_window_render window.ptr world.handle
 
 type Subscriptions t a = IORef (Map a (IntMap (EventTrigger t (Value a))))
@@ -665,9 +667,9 @@ instance Subscribe Scancode where
     let scancode = idunn_platform_scancode_event_scancode scancodeEvent
     (scancode, toBool $ idunn_platform_scancode_event_value scancodeEvent)
 
-subscribe :: forall t env item m. (Subscribe item, MonadReflexCreateTrigger t m, HasPlatform t env, MonadReader env m) => item -> m (Event t (Value item))
+subscribe :: forall t env w item m. (Subscribe item, MonadReflexCreateTrigger t m, HasPlatform t env, MonadReader env m) => item -> SystemT w m (Event t (Value item))
 subscribe item = do
-  platform :: Platform t <- asks getPlatform
+  platform :: Platform t <- lift $ asks getPlatform
   newEventWithTrigger $ \eventTrigger -> do
     uniq <- liftIO newUnique
     let subscription = hashUnique uniq -- TODO: handle collision

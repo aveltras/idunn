@@ -227,6 +227,10 @@ struct Gpu {
     size_t *vertexCount;
     size_t *indexCount;
     size_t *meshCount;
+    bool *vertexDirty;
+    bool *indexDirty;
+    bool *meshDirty;
+    bool *transformDirty;
     void **vertexData;
     uint32_t **indexData;
     idunn_gpu_mesh **meshData;
@@ -268,6 +272,7 @@ struct Gpu {
   auto syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
   auto syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
   auto syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void;
+  auto syncTransformBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
 
   auto create(Surface::Desc &description) -> Handle<Surface>;
   auto destroy(Handle<Surface> surface) -> void;

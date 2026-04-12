@@ -9,11 +9,14 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nix-filter.url = "github:numtide/nix-filter";
     systems.url = "github:nix-systems/default";
+    apecs.url = "github:aveltras/apecs/1dae739f561dda5a7602d10b4e25ec7bdb09907f";
+    apecs.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
     {
       self,
+      apecs,
       git-hooks,
       hs-bindgen,
       nixpkgs,
@@ -31,6 +34,7 @@
             hfinal: hprev:
             prev.haskell.packageOverrides hfinal hprev
             // {
+              apecs = hprev.callCabal2nix "apecs" "${inputs.apecs}/apecs" { };
               idunn =
                 let
                   basePkg =
@@ -135,7 +139,6 @@
       );
 
       devShells.${system}.default = pkgs.haskellPackages.shellFor rec {
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath nativeBuildInputs;
         packages = hsPkgs: [ hsPkgs.idunn ];
         withHoogle = true;
         nativeBuildInputs =
@@ -172,7 +175,9 @@
           ];
         shellHook = ''
           ${precommitCheck.shellHook}
-          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$(pwd)/vendor/SPIRV-Reflect:$(pwd)/vendor/Vulkan-Utility-Libraries/include:$(pwd)/vendor/miniaudio:$CPATH"
+          export CPATH="$(pwd)/cbits/include:$(pwd)/vendor/volk:$(pwd)/vendor/SPIRV-Reflect:$(pwd)/vendor/Vulkan-Utility-Libraries/include:$(pwd)/vendor/miniaudio:${pkgs.lib.makeIncludePath nativeBuildInputs}:''${CPATH:-}"
+          export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath nativeBuildInputs};
+          export LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeBuildInputs}"
           export LSAN_OPTIONS="report_objects=1:suppressions=${asanSuppress}"
         '';
       };

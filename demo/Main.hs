@@ -15,6 +15,8 @@
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Main where
 
@@ -23,51 +25,75 @@ import Data.Proxy
 import Idunn
 import Paths_idunn qualified as Cabal
 
+makeWorld "World" [''Node3D, ''GpuWorld]
+
+data MyGame = MyGame
+
+instance Game MyGame where
+  data GameState MyGame = ScreenA | ScreenB
+  type GameWorld MyGame = World
+  initGameWorld _ = initWorld
+  system = \case
+    ScreenA -> screenA
+    ScreenB -> screenB
+
 main :: IO ()
-main = run ScreenA $ \case
-  ScreenA -> screenA
-  ScreenB -> screenB
+main = run MyGame ScreenA
 
-screenA :: (App t m) => World Vertex -> m (Event t Screen)
-screenA world = do
-  withPhysicsSystem (Proxy @BroadPhaseLayer) (Proxy @ObjectLayer) $ \physicsSystem -> do
-    ePostBuild <- getPostBuild
-    currentTime <- liftIO getCurrentTime
-    ePhysicsTick <- tickLossyFrom (1 / 60) currentTime ePostBuild
-    performEvent_ $ ffor ePhysicsTick $ const $ update physicsSystem
-    floorID <- createBody physicsSystem (mkVec3 0 (-1) 0) Static NonMoving $ defaultSettings {halfExtentX = 100, halfExtentY = 1, halfExtentZ = 100}
-    -- onContactAdded physicsSystem floorID $ logDebug "FLOOR CONTACT!"
-    nodeID <- liftIO $ spawnNode rootNode identity world
-    setNodeMesh world nodeID
-    childNodeID <- liftIO $ spawnNode nodeID (translate identity $ mkVec3 0 1 0) world
-    setNodeMesh world childNodeID
-    grandChildNodeID <- liftIO $ spawnNode childNodeID (translate identity $ mkVec3 1 0 0) world
-    setNodeMesh world grandChildNodeID
-    syncWorldTransforms world
-    sphereID <- createBody physicsSystem (mkVec3 0 100 0) Dynamic Moving $ defaultSettings {radius = 0.5}
-    onContactAdded physicsSystem sphereID $ logDebug "SPHERE CONTACT!"
-    eKeyE <- subscribe KeyE
-    performEvent_ $ ffor (ffilter id eKeyE) $ \_ -> do
-      logInfo "Key 'E' Pressed "
-      soundPath <- liftIO $ Cabal.getDataFileName "demo/assets/freesound_community-wind-6352.mp3"
-      playSound soundPath
-    performEvent_ $ ffor ePostBuild $ const $ logInfo "PART A"
-    eKeyX <- subscribe KeyX
-    pure $ ScreenB <$ ffilter id eKeyX
+screenA :: (App t m MyGame) => SystemT World m (Event t (GameState MyGame))
+screenA = do
+  -- withPhysicsSystem (Proxy @BroadPhaseLayer) (Proxy @ObjectLayer) $ \physicsSystem -> do
+  ePostBuild <- getPostBuild
+  currentTime <- liftIO getCurrentTime
+  -- ePhysicsTick <- tickLossyFrom (1 / 60) currentTime ePostBuild
+  -- performEvent_ $ ffor ePhysicsTick $ const $ update physicsSystem
+  -- floorID <- createBody physicsSystem (mkVec3 0 (-1) 0) Static NonMoving $ defaultSettings {halfExtentX = 100, halfExtentY = 1, halfExtentZ = 100}
+  -- onContactAdded physicsSystem floorID $ logDebug "FLOOR CONTACT!"
+  -- nodeID <- liftIO $ spawnNode rootNode identity world
+  let indices = [0, 1, 2, 0, 2, 3]
+  let vertices =
+        [ Vertex $ mkVec3 (-1) (-1) 1,
+          Vertex $ mkVec3 1 (-1) 1,
+          Vertex $ mkVec3 1 1 1,
+          Vertex $ mkVec3 (-1) 1 1
+        ]
+  root <- newEntity (Transform Nothing identity, GpuMesh vertices indices)
+  rootNode3D <- get root
+  parent <- newEntity (Transform (Just rootNode3D) $ translate identity $ mkVec3 0 1 0, GpuMesh vertices indices)
+  parentNode3D <- get parent
+  child <- newEntity (Transform (Just parentNode3D) $ translate identity $ mkVec3 1 0 0, GpuMesh vertices indices)
 
-screenB :: (App t m) => World Vertex -> m (Event t Screen)
-screenB world = do
+  eTick <- tickLossyFrom 1 currentTime ePostBuild
+  performEvent_ $ ffor eTick $ const $ do
+    modify parent $ \(LocalTransform transform) -> (LocalTransform $ translate transform $ mkVec3 0.1 0 0)
+
+  -- root $= GpuMesh vertices indices
+  -- setNodeMesh root
+  -- childNodeID <- liftIO $ spawnNode nodeID (translate identity $ mkVec3 0 1 0) world
+  -- setNodeMesh world childNodeID
+  -- grandChildNodeID <- liftIO $ spawnNode childNodeID (translate identity $ mkVec3 1 0 0) world
+  -- setNodeMesh world grandChildNodeID
+  -- sphereID <- createBody physicsSystem (mkVec3 0 100 0) Dynamic Moving $ defaultSettings {radius = 0.5}
+  -- onContactAdded physicsSystem sphereID $ logDebug "SPHERE CONTACT!"
+
+  eKeyE <- subscribe KeyE
+  performEvent_ $ ffor (ffilter id eKeyE) $ \_ -> do
+    logInfo "Key 'E' Pressed "
+    soundPath <- liftIO $ Cabal.getDataFileName "demo/assets/freesound_community-wind-6352.mp3"
+    playSound soundPath
+
+  performEvent_ $ ffor ePostBuild $ const $ logInfo "PART A"
+  eKeyX <- subscribe KeyX
+  pure $ ScreenB <$ ffilter id eKeyX
+
+screenB :: (App t m MyGame) => SystemT World m (Event t (GameState MyGame))
+screenB = do
   ePostBuild <- getPostBuild
   performEvent_ $ ffor ePostBuild $ const $ logInfo "PART B"
   eScancodeW <- subscribe ScancodeW
   performEvent_ $ ffor (ffilter id eScancodeW) $ \_ -> logInfo "Scancode 'W' Pressed "
   eKeyX <- subscribe KeyX
   pure $ ScreenA <$ ffilter id eKeyX
-
-data Screen
-  = ScreenA
-  | ScreenB
-  deriving stock (Show, Eq)
 
 data ObjectLayer
   = NonMoving

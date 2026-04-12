@@ -20,16 +20,18 @@
 module Idunn.Vector where
 
 import Control.Monad (when)
+import Control.Monad.IO.Class
 import Data.IORef
 import Foreign
 import Foreign.C
 import GHC.Exts
-import GHC.IO
+import GHC.IO hiding (liftIO)
 
 data MutableBuffer = MutableBuffer (MutableByteArray# RealWorld)
 
 data PinnedVector a = PinnedVector
   { bufferPtr :: Ptr (Ptr a),
+    dirtyPtr :: Ptr CBool,
     sizePtr :: Ptr CSize,
     capPtr :: Ptr CSize,
     itemSize :: CSize,
@@ -42,8 +44,8 @@ dataPtr v = peek v.bufferPtr
 getRawPtr :: MutableBuffer -> Ptr a
 getRawPtr (MutableBuffer m#) = Ptr $ byteArrayContents# $ unsafeCoerce# m#
 
-newVector :: forall a. (Storable a) => CSize -> IO (PinnedVector a)
-newVector initialCapacity = do
+newVector :: forall a m. (Storable a, MonadIO m) => CSize -> m (PinnedVector a)
+newVector initialCapacity = liftIO $ do
   let bytesPerItem = fromIntegral $ sizeOf @a undefined
   let totalBytes = initialCapacity * bytesPerItem
 
@@ -52,10 +54,12 @@ newVector initialCapacity = do
       (# s1#, m# #) -> (# s1#, MutableBuffer m# #)
 
   pBuf <- malloc
+  pDirty <- malloc
   pSize <- malloc
   pCap <- malloc
 
   poke pBuf $ getRawPtr buf
+  poke pDirty $ fromBool False
   poke pSize 0
   poke pCap initialCapacity
 
@@ -64,6 +68,7 @@ newVector initialCapacity = do
   pure
     PinnedVector
       { bufferPtr = pBuf,
+        dirtyPtr = pDirty,
         sizePtr = pSize,
         capPtr = pCap,
         itemSize = bytesPerItem,
@@ -105,6 +110,7 @@ pushBack v item = do
   let destAddr = pData `plusPtr` fromIntegral (sz * v.itemSize)
   poke destAddr item
   poke v.sizePtr (sz + 1)
+  poke v.dirtyPtr $ fromBool True
 
 cap :: PinnedVector a -> IO CSize
 cap v = peek (capPtr v)
@@ -120,3 +126,4 @@ writeIndex :: (Storable a) => PinnedVector a -> Int -> a -> IO ()
 writeIndex v idx item = do
   ptr <- dataPtr v
   pokeElemOff ptr idx item
+  poke v.dirtyPtr $ fromBool True

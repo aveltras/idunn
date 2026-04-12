@@ -1515,6 +1515,10 @@ auto Gpu::create(World::Desc *description) -> Handle<World> {
   world.vertexCount = description->vertexCount;
   world.indexCount = description->indexCount;
   world.meshCount = description->meshCount;
+  world.vertexDirty = description->vertexDirty;
+  world.indexDirty = description->indexDirty;
+  world.meshDirty = description->meshDirty;
+  world.transformDirty = description->transformDirty;
   world.vertexData = description->vertexData;
   world.indexData = description->indexData;
   world.meshData = description->meshData;
@@ -1572,6 +1576,7 @@ auto Gpu::create(World::Desc *description) -> Handle<World> {
     syncVertexBuffer(&world, commandBuffer);
     syncIndexBuffer(&world, commandBuffer);
     syncMeshBuffers(&world, commandBuffer);
+    syncTransformBuffer(&world, commandBuffer);
   });
 
   return worlds.allocate(nullptr, world);
@@ -1591,6 +1596,7 @@ auto Gpu::syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void 
   vertexBufferWrite.writesSize = 1;
   vertexBufferWrite.writesSizes = &writesSize;
   write(world->vertexBuffer, commandBuffer, vertexBufferWrite);
+  *world->vertexDirty = false;
 }
 
 auto Gpu::syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
@@ -1601,7 +1607,9 @@ auto Gpu::syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
   indexBufferWrite.writesSize = 1;
   indexBufferWrite.writesSizes = &writesSize;
   write(world->indexBuffer, commandBuffer, indexBufferWrite);
+  *world->indexDirty = false;
 }
+
 auto Gpu::syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void {
   std::vector<VkDrawIndexedIndirectCommand> drawCommands(world->currentMeshCount);
   std::vector<Draw> draws(world->currentMeshCount);
@@ -1616,7 +1624,6 @@ auto Gpu::syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void {
   }
 
   auto indirectWritesSize = world->currentMeshCount * sizeof(VkDrawIndexedIndirectCommand);
-  auto transformWritesSize = world->currentMeshCount * sizeof(glm::mat4);
   auto drawWritesSize = world->currentMeshCount * sizeof(Draw);
 
   Buffer::Write indirectBufferWrite = {};
@@ -1626,6 +1633,19 @@ auto Gpu::syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void {
   indirectBufferWrite.writesSizes = &indirectWritesSize;
   write(world->indirectBuffer, commandBuffer, indirectBufferWrite);
 
+  Buffer::Write drawBufferWrite = {};
+  void *pDrawData[] = {draws.data()};
+  drawBufferWrite.writesData = pDrawData;
+  drawBufferWrite.writesSize = 1;
+  drawBufferWrite.writesSizes = &drawWritesSize;
+  write(world->drawBuffer, commandBuffer, drawBufferWrite);
+
+  *world->meshDirty = false;
+}
+
+auto Gpu::syncTransformBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
+  auto transformWritesSize = world->currentMeshCount * sizeof(glm::mat4);
+
   Buffer::Write transformBufferWrite = {};
   void *pTransformData[] = {world->currentTransformData};
   transformBufferWrite.writesData = pTransformData;
@@ -1633,12 +1653,7 @@ auto Gpu::syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void {
   transformBufferWrite.writesSizes = &transformWritesSize;
   write(world->transformBuffer, commandBuffer, transformBufferWrite);
 
-  Buffer::Write drawBufferWrite = {};
-  void *pDrawData[] = {draws.data()};
-  drawBufferWrite.writesData = pDrawData;
-  drawBufferWrite.writesSize = 1;
-  drawBufferWrite.writesSizes = &drawWritesSize;
-  write(world->drawBuffer, commandBuffer, drawBufferWrite);
+  *world->transformDirty = false;
 }
 
 auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::mat4 projection, uint32_t width, uint32_t height, float clearColor) -> void {
@@ -1674,23 +1689,27 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   VK_CHECK(vkResetCommandBuffer(commandBuffer, 0));
   VK_CHECK(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo));
 
-  if (world->currentVertexData != *world->vertexData || world->currentVertexCount != *world->vertexCount) {
+  if (*world->vertexDirty) {
     world->currentVertexCount = *world->vertexCount;
     world->currentVertexData = *world->vertexData;
     syncVertexBuffer(world, commandBuffer);
   }
 
-  if (world->currentIndexData != *world->indexData || world->currentIndexCount != *world->indexCount) {
+  if (*world->indexDirty) {
     world->currentIndexCount = *world->indexCount;
     world->currentIndexData = *world->indexData;
     syncIndexBuffer(world, commandBuffer);
   }
 
-  if (world->currentMeshData != *world->meshData || world->currentMeshCount != *world->meshCount) {
+  if (*world->meshDirty) {
     world->currentMeshCount = *world->meshCount;
     world->currentMeshData = *world->meshData;
-    world->currentTransformData = *world->transformData;
     syncMeshBuffers(world, commandBuffer);
+  }
+
+  if (*world->transformDirty) {
+    world->currentTransformData = *world->transformData;
+    syncTransformBuffer(world, commandBuffer);
   }
 
   VkImageMemoryBarrier2 imageMemoryBarrier2 = {};
