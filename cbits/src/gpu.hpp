@@ -59,9 +59,8 @@ struct Gpu {
     };
 
     struct Write {
-      void **writesData;
-      size_t *writesSizes;
-      uint8_t writesSize;
+      void *data;
+      uint8_t size;
     };
 
   private:
@@ -71,6 +70,7 @@ struct Gpu {
     VkMemoryPropertyFlags memoryFlags;
     VkImageUsageFlags usageFlags;
     VkDeviceAddress address;
+    VkDeviceSize size;
 #ifndef NDEBUG
     const char *debugName;
 #endif
@@ -199,6 +199,7 @@ struct Gpu {
 
   struct Draw {
     uint32_t transformIdx;
+    uint32_t meshIdx;
   };
 
   using Mesh = idunn_gpu_mesh;
@@ -222,25 +223,13 @@ struct Gpu {
     Handle<Buffer> transformBuffer;
     Handle<Buffer> drawBuffer;
     Handle<Pipeline> pipeline;
+    std::vector<idunn_gpu_mesh> meshes;
+    std::vector<Draw> draws;
     uint32_t vertexSize;
     uint32_t indexSize;
-    size_t *vertexCount;
-    size_t *indexCount;
-    size_t *meshCount;
-    bool *vertexDirty;
-    bool *indexDirty;
-    bool *meshDirty;
-    bool *transformDirty;
-    void **vertexData;
-    uint32_t **indexData;
-    idunn_gpu_mesh **meshData;
+    uint32_t vertexCount;
+    uint32_t indexCount;
     float (**transformData)[16];
-    size_t currentVertexCount;
-    size_t currentIndexCount;
-    size_t currentMeshCount;
-    void *currentVertexData;
-    uint32_t *currentIndexData;
-    idunn_gpu_mesh *currentMeshData;
     float (*currentTransformData)[16];
   };
 
@@ -249,7 +238,7 @@ struct Gpu {
 
   auto create(Buffer::Desc &description) -> Handle<Buffer>;
   auto create(Buffer &buffer, size_t size) -> Handle<Buffer>;
-  auto write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const Buffer::Write &writeInfo) -> void;
+  auto write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std::vector<Buffer::Write> &writeInfos, bool append = false) -> void;
   auto destroy(Handle<Buffer> buffer) -> void;
   auto destroy(Buffer &buffer) -> void;
 
@@ -269,10 +258,7 @@ struct Gpu {
   auto create(World::Desc *description) -> Handle<World>;
   auto destroy(Handle<World> world) -> void;
   auto destroy(World &world) -> void;
-  auto syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
-  auto syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
-  auto syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void;
-  auto syncTransformBuffer(World *world, VkCommandBuffer commandBuffer) -> void;
+  auto uploadMeshes(Handle<World> world, idunn_gpu_mesh_upload *uploadInfo) -> void;
 
   auto create(Surface::Desc &description) -> Handle<Surface>;
   auto destroy(Handle<Surface> surface) -> void;

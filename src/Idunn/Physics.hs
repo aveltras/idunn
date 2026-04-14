@@ -21,13 +21,12 @@
 
 module Idunn.Physics
   ( Physics,
-    PhysicsSystem,
+    System,
     IsPhysicsSystem (..),
     HasPhysics (..),
-    APhysicsSystem (..),
-    PhysicsStore (..),
-    initPhysics,
-    withPhysicsSystem,
+    MotionType,
+    -- initPhysics,
+    initSystem,
     update,
     BodyID,
     pattern Static,
@@ -35,32 +34,28 @@ module Idunn.Physics
     pattern Kinematic,
     Shape (defaultSettings),
     ShapeSettings (..),
-    createBody,
+    initRigidBody,
     onContactAdded,
   )
 where
 
-import Apecs hiding (Map, Set, asks)
-import Apecs.Core hiding (Set)
 import Control.Monad (forM_, when)
 import Control.Monad.Reader
-import Data.IntMap.Strict (IntMap)
-import Data.IntMap.Strict qualified as IntMap
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Proxy
 import Data.Set
-import Data.Unique (hashUnique, newUnique)
-import Data.Vector.Generic.Mutable qualified as MV
 import Data.Void (Void)
 import Foreign
 import Foreign.C
-import GHC.Exts (RealWorld)
 import HsBindgen.Runtime.Prelude hiding (Elem)
+import Idunn.Core qualified as Idunn
+import Idunn.Linear.Mat (Mat4x4)
 import Idunn.Linear.Vec
 import Idunn.Physics.FFI
 import Idunn.Vector
-import Idunn.World
+import Idunn.World (World)
 import UnliftIO
 import UnliftIO.Resource
 
@@ -68,39 +63,31 @@ data Physics = Physics
   { ptr :: Ptr Void
   }
 
+-- instance Resource Physics where
+--   initializeResource = snd <$> allocate up down
+--     where
+--       up =
+--         alloca $ \pPhysics -> do
+--           idunn_physics_init pPhysics
+--           Physics <$> peek pPhysics
+--       down physics = idunn_physics_uninit physics.ptr
+
+-- initPhysics :: (MonadResource m) => m Physics
+-- initPhysics = snd <$> allocate up down
+--   where
+--     up =
+--       alloca $ \pPhysics -> do
+--         idunn_physics_init pPhysics
+--         Physics <$> peek pPhysics
+--     down physics = idunn_physics_uninit physics.ptr
+
+data PhysicsSystem
+
+-- instance Idunn.System PhysicsSystem where
+--   type Dependencies PhysicsSystem = '[World]
+
 class HasPhysics env where
   getPhysics :: env -> Physics
-
-initPhysics :: (MonadResource m) => m Physics
-initPhysics = snd <$> allocate up down
-  where
-    up =
-      alloca $ \pPhysics -> do
-        idunn_physics_init pPhysics
-        Physics <$> peek pPhysics
-    down physics = idunn_physics_uninit physics.ptr
-
-data PhysicsStore c = PhysicsStore
-  { systems :: IORef (IntMap APhysicsSystem)
-  }
-
-instance (MonadIO m) => ExplInit m (PhysicsStore Physics) where
-  explInit = do
-    systemsRef <- newIORef mempty
-    pure $
-      PhysicsStore
-        { systems = systemsRef
-        }
-
-instance Component Physics where
-  type Storage Physics = PhysicsStore Physics
-
-type instance Elem (PhysicsStore Physics) = Physics
-
-data APhysicsSystem
-  = forall broadPhaseLayer objectLayer s.
-    (IsPhysicsSystem broadPhaseLayer objectLayer) =>
-    APhysicsSystem (PhysicsSystem s broadPhaseLayer objectLayer)
 
 class
   ( Eq objectLayer,
@@ -119,7 +106,7 @@ class
   shouldCollideBroad :: objectLayer -> Set broadPhaseLayer
   shouldCollideObject :: Proxy broadPhaseLayer -> objectLayer -> Set objectLayer
 
-data PhysicsSystem s broadPhaseLayer objectLayer = PhysicsSystem
+data System s broadPhaseLayer objectLayer = PhysicsSystem
   { ptr :: Ptr Void,
     ptrContactRemovedCount :: Ptr Word32,
     ptrContactRemoved :: Ptr (Ptr Word64),
@@ -135,30 +122,21 @@ newtype BodyID s = BodyID
   deriving stock (Show)
   deriving newtype (Eq, Ord)
 
-withPhysicsSystem ::
-  forall broadPhaseLayer objectLayer env w m a.
+initSystem ::
+  forall broadPhaseLayer objectLayer env m s.
   ( IsPhysicsSystem broadPhaseLayer objectLayer,
-    Has w m Physics,
-    HasWorldInit env,
     HasPhysics env,
     MonadReader env m,
     MonadResource m
   ) =>
   Proxy broadPhaseLayer ->
   Proxy objectLayer ->
-  (forall s. PhysicsSystem s broadPhaseLayer objectLayer -> SystemT w m a) ->
-  SystemT w m a
-withPhysicsSystem _ _ f = do
-  worldInit <- lift $ asks getWorldInit
-  worldTransforms <- readIORef worldInit.worldTransforms
-  physics <- lift $ asks getPhysics
-  physicsStore :: PhysicsStore Physics <- getStore
-  uniq <- liftIO newUnique
-  let systemId = hashUnique uniq -- TODO: handle collision
-  let registerSystem = \system -> atomicModifyIORef' physicsStore.systems $ \systems -> (IntMap.insert systemId (APhysicsSystem system) systems, system)
-  let unregisterSystem :: IO () = atomicModifyIORef' physicsStore.systems $ \systems -> (IntMap.delete systemId systems, ())
-  (_, physicsSystem) <- allocate (up physics worldTransforms registerSystem) $ down unregisterSystem
-  f physicsSystem
+  PinnedVector Mat4x4 ->
+  m (System s broadPhaseLayer objectLayer)
+initSystem _ _ worldTransforms = do
+  physics <- asks getPhysics
+  (_, system) <- allocate (up physics worldTransforms) down
+  pure system
   where
     allBroadPhaseLayers :: [broadPhaseLayer] = [minBound .. maxBound]
     allObjectLayers :: [objectLayer] = [minBound .. maxBound]
@@ -177,16 +155,14 @@ withPhysicsSystem _ _ f = do
         bl <- allBroadPhaseLayers
       ]
 
-    down :: IO () -> PhysicsSystem s broadPhaseLayer objectLayer -> IO ()
-    down unregisterSystem system = do
+    down system = do
       putStrLn "drop physics"
-      unregisterSystem
       freeHaskellFunPtr system.onContactAddedFn
       idunn_physics_system_uninit system.ptr
       free system.ptrActiveBodyCount
       free system.ptrActiveBodyIdsPtr
 
-    up physics transforms registerSystem = alloca $ \ptrConfig -> do
+    up physics transforms = alloca $ \ptrConfig -> do
       ptrContactRemovedCount <- malloc
       ptrContactRemoved <- malloc
       contactAddedListeners <- newIORef mempty
@@ -227,7 +203,7 @@ withPhysicsSystem _ _ f = do
                 alloca $ \ptrSystem -> do
                   idunn_physics_system_init physics.ptr ptrConfig ptrSystem
                   system <- peek ptrSystem
-                  registerSystem
+                  pure
                     PhysicsSystem
                       { ptr = system,
                         ptrContactRemovedCount = ptrContactRemovedCount,
@@ -238,8 +214,8 @@ withPhysicsSystem _ _ f = do
                         onContactAddedFn = onContactAddedFn
                       }
 
-update :: (MonadIO m, Has w m Node3D) => PhysicsSystem s broadPhaseLayer objectLayer -> SystemT w m ()
-update system = do
+update :: (MonadIO m) => System s broadPhaseLayer objectLayer -> (Int -> m ()) -> m ()
+update system f = do
   liftIO $ idunn_physics_system_update_safe system.ptr
   contactRemovedCount <- liftIO $ peek system.ptrContactRemovedCount
   when (contactRemovedCount > 0) $ do
@@ -251,12 +227,10 @@ update system = do
       liftIO $ print (BodyID body1, BodyID body2)
   activeBodyCount <- liftIO $ peek system.ptrActiveBodyCount
   when (activeBodyCount > 0) $ do
-    store :: Nodes Node3D <- getStore
     ptrActiveBodies <- liftIO $ peek system.ptrActiveBodyIdsPtr
     forM_ [0 .. fromIntegral activeBodyCount - 1] $ \i -> do
-      node3D :: Word32 <- liftIO $ peekElemOff ptrActiveBodies i
-      liftIO $ print (Node3D $ fromIntegral node3D)
-      markDirty store (Node3D $ fromIntegral node3D)
+      nodeIdx :: Word32 <- liftIO $ peekElemOff ptrActiveBodies i
+      f $ fromIntegral nodeIdx
 
 data SphereShape
 
@@ -320,17 +294,17 @@ instance Shape BoxShape where
 
 type MotionType = Idunn_physics_motion_type
 
-createBody ::
-  forall shape broadPhaseLayer objectLayer m w s.
+initRigidBody ::
+  forall shape broadPhaseLayer objectLayer m s.
   (Shape shape, MonadIO m, IsPhysicsSystem broadPhaseLayer objectLayer) =>
-  PhysicsSystem s broadPhaseLayer objectLayer ->
-  Node3D ->
+  System s broadPhaseLayer objectLayer ->
+  Int ->
   Vec3 ->
   MotionType ->
   objectLayer ->
   ShapeSettings shape ->
-  SystemT w m ()
-createBody system (Node3D node) position motionType objectLayer settings = do
+  m ()
+initRigidBody system nodeIdx position motionType objectLayer settings = do
   liftIO $ do
     alloca $ \ptrSettings -> do
       poke ptrSettings $
@@ -340,11 +314,11 @@ createBody system (Node3D node) position motionType objectLayer settings = do
             idunn_physics_body_settings_objectLayer = fromIntegral $ fromEnum objectLayer,
             idunn_physics_body_settings_position = toPtr position,
             idunn_physics_body_settings_motionType = motionType,
-            idunn_physics_body_settings_bodyID = fromIntegral node
+            idunn_physics_body_settings_bodyID = fromIntegral nodeIdx
           }
       idunn_physics_body_init system.ptr ptrSettings
 
-onContactAdded :: (MonadIO m) => PhysicsSystem s broadPhaseLayer objectLayer -> BodyID s -> IO () -> m ()
+onContactAdded :: (MonadIO m) => System s broadPhaseLayer objectLayer -> BodyID s -> IO () -> m ()
 onContactAdded system bodyID f = do
   atomicModifyIORef' system.contactAddedListeners $ \listeners -> (Map.insert bodyID f listeners, ())
   liftIO $ idunn_physics_body_contact_subscribe system.ptr bodyID.raw

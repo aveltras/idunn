@@ -20,15 +20,21 @@
 module Idunn.Linear.Mat
   ( Mat4x4,
     mkMat4x4,
+    toConstantArray,
     identity,
     multiply,
     translate,
   )
 where
 
+import Data.Proxy
+import Data.Vector.Storable qualified as VS
+import Foreign.C
 import Foreign.Storable
 import GHC.Exts
+import GHC.ForeignPtr
 import GHC.IO
+import HsBindgen.Runtime.ConstantArray qualified as CA
 import Idunn.Linear.Vec
 
 data Mat4x4 = Mat4x4 ByteArray#
@@ -69,6 +75,11 @@ instance Storable Mat4x4 where
         let s2# = copyAddrToByteArray# addr# marr# 0# 64# s1#
          in case unsafeFreezeByteArray# marr# s2# of
               (# s3#, arr# #) -> (# s3#, Mat4x4 arr# #)
+
+toConstantArray :: Mat4x4 -> CA.ConstantArray 16 CFloat
+toConstantArray (Mat4x4 ba#) = do
+  let fptr = ForeignPtr (byteArrayContents# ba#) (PlainPtr (unsafeCoerce# ba#))
+  CA.fromVector (Proxy @16) $ VS.unsafeFromForeignPtr0 fptr 16
 
 identity :: Mat4x4
 identity = mkMat4x4 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1

@@ -42,6 +42,7 @@ library
     apecs,
     base,
     bytestring,
+    clock,
     containers,
     dependent-sum,
     hs-bindgen,
@@ -50,8 +51,10 @@ library
     ref-tf,
     reflex,
     resourcet,
+    template-haskell,
     text,
     time,
+    typerep-map,
     unliftio,
     vector,
 
@@ -110,8 +113,11 @@ library
   other-modules:
     Idunn.Audio
     Idunn.Audio.FFI
+    Idunn.Core
     Idunn.Gpu
     Idunn.Gpu.FFI
+    Idunn.Graphics
+    Idunn.Input
     Idunn.Linear.Mat
     Idunn.Linear.Vec
     Idunn.Logger
@@ -120,8 +126,9 @@ library
     Idunn.Physics.FFI
     Idunn.Platform
     Idunn.Platform.FFI
-    Idunn.Resource
+    Idunn.TypeLevel
     Idunn.Vector
+    Idunn.Window
     Idunn.World
     Paths_idunn
 
@@ -136,6 +143,7 @@ executable demo
   ghc-options: -threaded
   other-modules: Paths_idunn
   build-depends:
+    apecs,
     base,
     containers,
     idunn,

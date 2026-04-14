@@ -43,6 +43,11 @@ void idunn_gpu_uninit(void *gpu) {
   delete static_cast<Gpu *>(gpu);
 }
 
+void idunn_gpu_buffer_init(void *gpu, idunn_gpu_buffer_config *config, void **pBuffer) {}
+void idunn_gpu_buffer_uninit(void *gpu, void *buffer) {}
+void idunn_gpu_buffer_write(void *gpu, void *buffer, idunn_gpu_buffer_write_info *writeInfo) {}
+void idunn_gpu_render(void *gpu, void *surface, idunn_gpu_render_info *renderInfo) {}
+
 void idunn_gpu_world_init(void *gpu, idunn_gpu_world_config *config, uint64_t *pWorldHandle) {
   *pWorldHandle = static_cast<Gpu *>(gpu)->create(config).raw();
 }
@@ -50,6 +55,10 @@ void idunn_gpu_world_init(void *gpu, idunn_gpu_world_config *config, uint64_t *p
 void idunn_gpu_world_uninit(void *gpu, uint64_t worldHandle) {
   static_cast<Gpu *>(gpu)->destroy(Handle<Gpu::World>(worldHandle));
 }
+
+// void idunn_gpu_world_upload_meshes(void *gpu, uint64_t worldHandle, idunn_gpu_mesh_upload *uploadInfo) {
+//   static_cast<Gpu *>(gpu)->uploadMeshes(Handle<Gpu::World>(worldHandle), uploadInfo);
+// }
 }
 
 #define VK_CHECK(func)                     \
@@ -741,24 +750,35 @@ auto Gpu::create(Buffer &buffer, size_t size) -> Handle<Buffer> {
   return buffers.allocate(nullptr, buffer);
 }
 
-auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const Buffer::Write &writeInfo) -> void {
+auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std::vector<Buffer::Write> &writeInfos, bool append) -> void {
   Buffer &buffer = *buffers.get(handle);
 
-  size_t totalSize = 0;
-  for (uint32_t i = 0; i < writeInfo.writesSize; i++) {
-    totalSize += writeInfo.writesSizes[i];
+  size_t totalWriteSize = 0;
+  for (const auto &writeInfo : writeInfos) {
+    totalWriteSize += writeInfo.size;
   }
 
+  size_t totalSize = buffer.size + totalWriteSize;
+
+  auto writeOffset = append ? buffer.size : 0;
+
   if (totalSize > buffer.allocationInfo.size) {
+    auto *oldBuffer = buffer.buffer;
+    auto oldSize = buffer.size;
     destroy(buffer);
-    create(buffer, totalSize);
+    create(buffer, std::max(buffer.allocationInfo.size * 2, totalSize));
+    VkBufferCopy copyRegion = {};
+    copyRegion.srcOffset = 0;
+    copyRegion.dstOffset = 0;
+    copyRegion.size = oldSize;
+    vkCmdCopyBuffer(commandBuffer, oldBuffer, buffer.buffer, 1, &copyRegion);
   }
 
   if ((buffer.memoryFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U) {
-    auto *destinationPtr = static_cast<uint8_t *>(buffer.allocationInfo.pMappedData);
-    for (uint32_t i = 0; i < writeInfo.writesSize; i++) {
-      memcpy(destinationPtr, writeInfo.writesData[i], writeInfo.writesSizes[i]);
-      destinationPtr += writeInfo.writesSizes[i];
+    auto *destinationPtr = static_cast<uint8_t *>(buffer.allocationInfo.pMappedData) + writeOffset;
+    for (const auto &writeInfo : writeInfos) {
+      memcpy(destinationPtr, writeInfo.data, writeInfo.size);
+      destinationPtr += writeInfo.size;
     }
 
     VK_CHECK(vmaFlushAllocation(allocator, buffer.allocation, 0, VK_WHOLE_SIZE));
@@ -794,7 +814,7 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const Buff
     VkBufferCreateInfo stagingBufferCreateInfo = {};
     stagingBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     stagingBufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    stagingBufferCreateInfo.size = buffer.allocationInfo.size;
+    stagingBufferCreateInfo.size = totalWriteSize;
 
     VmaAllocationCreateInfo stagingAllocationCreateInfo = {};
     stagingAllocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
@@ -814,9 +834,9 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const Buff
         &stagingAllocationInfo));
 
     auto *destinationPtr = static_cast<uint8_t *>(stagingAllocationInfo.pMappedData);
-    for (uint32_t i = 0; i < writeInfo.writesSize; i++) {
-      memcpy(destinationPtr, writeInfo.writesData[i], writeInfo.writesSizes[i]);
-      destinationPtr += writeInfo.writesSizes[i];
+    for (const auto &writeInfo : writeInfos) {
+      memcpy(destinationPtr, writeInfo.data, writeInfo.size);
+      destinationPtr += writeInfo.size;
     }
 
     VK_CHECK(vmaFlushAllocation(allocator, stagingAllocation, 0, VK_WHOLE_SIZE));
@@ -845,7 +865,7 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const Buff
 
     VkBufferCopy bufferCopy = {};
     bufferCopy.srcOffset = 0;
-    bufferCopy.dstOffset = 0;
+    bufferCopy.dstOffset = writeOffset;
     bufferCopy.size = totalSize;
 
     vkCmdCopyBuffer(commandBuffer, stagingBuffer, buffer.buffer, 1, &bufferCopy);
@@ -874,6 +894,8 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const Buff
 
     // TODO: destroy staging buffer
   }
+
+  buffer.size = totalSize;
 }
 
 auto Gpu::destroy(Handle<Buffer> buffer) -> void {
@@ -1512,44 +1534,25 @@ auto Gpu::create(World::Desc *description) -> Handle<World> {
   World world = {};
   world.vertexSize = description->vertexSize;
   world.indexSize = description->indexSize;
-  world.vertexCount = description->vertexCount;
-  world.indexCount = description->indexCount;
-  world.meshCount = description->meshCount;
-  world.vertexDirty = description->vertexDirty;
-  world.indexDirty = description->indexDirty;
-  world.meshDirty = description->meshDirty;
-  world.transformDirty = description->transformDirty;
-  world.vertexData = description->vertexData;
-  world.indexData = description->indexData;
-  world.meshData = description->meshData;
+  world.vertexCount = 0;
+  world.indexCount = 0;
   world.transformData = description->transformData;
-  world.currentVertexCount = *world.vertexCount;
-  world.currentIndexCount = *world.indexCount;
-  world.currentMeshCount = *world.meshCount;
-  world.currentVertexData = *world.vertexData;
-  world.currentIndexData = *world.indexData;
-  world.currentMeshData = *world.meshData;
   world.currentTransformData = *world.transformData;
 
   Buffer::Desc vertexBufferDesc = {};
   vertexBufferDesc.usage = Buffer::Usage::Vertex;
-  vertexBufferDesc.size = world.currentVertexCount * description->vertexSize;
 
   Buffer::Desc indexBufferDesc = {};
   indexBufferDesc.usage = Buffer::Usage::Index;
-  indexBufferDesc.size = world.currentIndexCount * description->indexSize;
 
   Buffer::Desc indirectBufferDesc = {};
   indirectBufferDesc.usage = Buffer::Usage::Indirect;
-  indirectBufferDesc.size = world.currentMeshCount * sizeof(VkDrawIndexedIndirectCommand);
 
   Buffer::Desc transformBufferDesc = {};
   transformBufferDesc.usage = Buffer::Usage::Storage;
-  transformBufferDesc.size = world.currentMeshCount * sizeof(glm::mat4);
 
   Buffer::Desc drawBufferDesc = {};
   drawBufferDesc.usage = Buffer::Usage::Storage;
-  drawBufferDesc.size = world.currentMeshCount * sizeof(Draw);
 
   Pipeline::Desc pipelineDesc = {};
   pipelineDesc.shader = "basic";
@@ -1572,13 +1575,6 @@ auto Gpu::create(World::Desc *description) -> Handle<World> {
   world.drawBuffer = create(drawBufferDesc);
   world.pipeline = create(pipelineDesc);
 
-  submit([&](VkCommandBuffer commandBuffer) -> void {
-    syncVertexBuffer(&world, commandBuffer);
-    syncIndexBuffer(&world, commandBuffer);
-    syncMeshBuffers(&world, commandBuffer);
-    syncTransformBuffer(&world, commandBuffer);
-  });
-
   return worlds.allocate(nullptr, world);
 }
 
@@ -1588,73 +1584,114 @@ auto Gpu::destroy(Handle<World> world) -> void {
 auto Gpu::destroy(World &world) -> void {
 }
 
-auto Gpu::syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
-  auto writesSize = world->currentVertexCount * world->vertexSize;
-  Buffer::Write vertexBufferWrite = {};
-  void *pVertexData[] = {world->currentVertexData};
-  vertexBufferWrite.writesData = pVertexData;
-  vertexBufferWrite.writesSize = 1;
-  vertexBufferWrite.writesSizes = &writesSize;
-  write(world->vertexBuffer, commandBuffer, vertexBufferWrite);
-  *world->vertexDirty = false;
-}
+// auto Gpu::syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
+//   auto writesSize = world->vertexCount * world->vertexSize;
+//   Buffer::Write vertexBufferWrite = {};
+//   void *pVertexData[] = {world->currentVertexData};
+//   vertexBufferWrite.writesData = pVertexData;
+//   vertexBufferWrite.writesSize = 1;
+//   vertexBufferWrite.writesSizes = &writesSize;
+//   write(world->vertexBuffer, commandBuffer, vertexBufferWrite);
+//   *world->vertexDirty = false;
+// }
 
-auto Gpu::syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
-  auto writesSize = world->currentIndexCount * world->indexSize;
-  Buffer::Write indexBufferWrite = {};
-  void *pIndexData[] = {world->currentIndexData};
-  indexBufferWrite.writesData = pIndexData;
-  indexBufferWrite.writesSize = 1;
-  indexBufferWrite.writesSizes = &writesSize;
-  write(world->indexBuffer, commandBuffer, indexBufferWrite);
-  *world->indexDirty = false;
-}
+// auto Gpu::syncIndexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
+//   auto writesSize = world->indexCount * world->indexSize;
+//   Buffer::Write indexBufferWrite = {};
+//   void *pIndexData[] = {world->currentIndexData};
+//   indexBufferWrite.writesData = pIndexData;
+//   indexBufferWrite.writesSize = 1;
+//   indexBufferWrite.writesSizes = &writesSize;
+//   write(world->indexBuffer, commandBuffer, indexBufferWrite);
+//   *world->indexDirty = false;
+// }
 
-auto Gpu::syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void {
-  std::vector<VkDrawIndexedIndirectCommand> drawCommands(world->currentMeshCount);
-  std::vector<Draw> draws(world->currentMeshCount);
+// auto Gpu::syncMeshBuffers(World *world, VkCommandBuffer commandBuffer) -> void {
+//   std::vector<VkDrawIndexedIndirectCommand> drawCommands(world->currentMeshCount);
+//   std::vector<Draw> draws(world->currentMeshCount);
 
-  for (auto i = 0; std::cmp_less(i, world->currentMeshCount); i++) {
-    drawCommands[i].indexCount = world->currentMeshData[i].indexCount;
-    drawCommands[i].instanceCount = 1;
-    drawCommands[i].firstIndex = world->currentMeshData[i].indexOffset;
-    drawCommands[i].vertexOffset = static_cast<int32_t>(world->currentMeshData[i].vertexOffset);
-    drawCommands[i].firstInstance = i;
-    draws[i].transformIdx = i;
-  }
+//   for (auto i = 0; std::cmp_less(i, world->currentMeshCount); i++) {
+//     drawCommands[i].indexCount = world->currentMeshData[i].indexCount;
+//     drawCommands[i].instanceCount = 1;
+//     drawCommands[i].firstIndex = world->currentMeshData[i].indexOffset;
+//     drawCommands[i].vertexOffset = static_cast<int32_t>(world->currentMeshData[i].vertexOffset);
+//     drawCommands[i].firstInstance = i;
+//     draws[i].transformIdx = i;
+//   }
 
-  auto indirectWritesSize = world->currentMeshCount * sizeof(VkDrawIndexedIndirectCommand);
-  auto drawWritesSize = world->currentMeshCount * sizeof(Draw);
+//   auto indirectWritesSize = world->currentMeshCount * sizeof(VkDrawIndexedIndirectCommand);
+//   auto drawWritesSize = world->currentMeshCount * sizeof(Draw);
 
-  Buffer::Write indirectBufferWrite = {};
-  void *pIndirectData[] = {drawCommands.data()};
-  indirectBufferWrite.writesData = pIndirectData;
-  indirectBufferWrite.writesSize = 1;
-  indirectBufferWrite.writesSizes = &indirectWritesSize;
-  write(world->indirectBuffer, commandBuffer, indirectBufferWrite);
+//   Buffer::Write indirectBufferWrite = {};
+//   void *pIndirectData[] = {drawCommands.data()};
+//   indirectBufferWrite.writesData = pIndirectData;
+//   indirectBufferWrite.writesSize = 1;
+//   indirectBufferWrite.writesSizes = &indirectWritesSize;
+//   write(world->indirectBuffer, commandBuffer, indirectBufferWrite);
 
-  Buffer::Write drawBufferWrite = {};
-  void *pDrawData[] = {draws.data()};
-  drawBufferWrite.writesData = pDrawData;
-  drawBufferWrite.writesSize = 1;
-  drawBufferWrite.writesSizes = &drawWritesSize;
-  write(world->drawBuffer, commandBuffer, drawBufferWrite);
+//   Buffer::Write drawBufferWrite = {};
+//   void *pDrawData[] = {draws.data()};
+//   drawBufferWrite.writesData = pDrawData;
+//   drawBufferWrite.writesSize = 1;
+//   drawBufferWrite.writesSizes = &drawWritesSize;
+//   write(world->drawBuffer, commandBuffer, drawBufferWrite);
 
-  *world->meshDirty = false;
-}
+//   *world->meshDirty = false;
+// }
 
-auto Gpu::syncTransformBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
-  auto transformWritesSize = world->currentMeshCount * sizeof(glm::mat4);
+// auto Gpu::syncTransformBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
+//   auto transformWritesSize = world->currentMeshCount * sizeof(glm::mat4);
 
-  Buffer::Write transformBufferWrite = {};
-  void *pTransformData[] = {world->currentTransformData};
-  transformBufferWrite.writesData = pTransformData;
-  transformBufferWrite.writesSize = 1;
-  transformBufferWrite.writesSizes = &transformWritesSize;
-  write(world->transformBuffer, commandBuffer, transformBufferWrite);
+//   Buffer::Write transformBufferWrite = {};
+//   void *pTransformData[] = {world->currentTransformData};
+//   transformBufferWrite.writesData = pTransformData;
+//   transformBufferWrite.writesSize = 1;
+//   transformBufferWrite.writesSizes = &transformWritesSize;
+//   write(world->transformBuffer, commandBuffer, transformBufferWrite);
 
-  *world->transformDirty = false;
-}
+//   *world->transformDirty = false;
+// }
+
+// auto Gpu::uploadMeshes(Handle<World> worldHandle, idunn_gpu_mesh_upload *uploadInfo) -> void {
+//   World *world = worlds.get(worldHandle);
+
+//   std::vector<Buffer::Write> vertexWriteInfos;
+//   std::vector<Buffer::Write> indexWriteInfos;
+
+//   auto startVertexCount = world->vertexCount;
+//   auto startIndexCount = world->indexCount;
+
+//   for (auto i = 0; i < uploadInfo->meshCount; i++) {
+//     idunn_gpu_mesh *mesh = &uploadInfo->meshes[i];
+
+//     uploadInfo->meshHandles[i] = world->meshes.size();
+
+//     world->meshes.emplace_back(idunn_gpu_mesh{
+//         .indexOffset = mesh->indexOffset + world->indexCount,
+//         .indexCount = mesh->indexCount,
+//         .vertexOffset = mesh->vertexOffset + world->vertexCount,
+//         .vertexCount = mesh->vertexCount,
+//     });
+
+//     world->vertexCount += mesh->vertexCount;
+//     world->indexCount += mesh->indexCount;
+//   }
+
+//   vertexWriteInfos.emplace_back(Buffer::Write{
+//       .size = world->vertexSize * (world->vertexCount - startVertexCount),
+//       .data = uploadInfo->vertices,
+//   });
+
+//   indexWriteInfos.emplace_back(Buffer::Write{
+//       .size = world->indexSize * (world->indexCount - startIndexCount),
+//       .data = uploadInfo->indices,
+//   });
+
+//   submit([&](VkCommandBuffer commandBuffer) -> void {
+//     write(world->vertexBuffer, commandBuffer, vertexWriteInfos, true);
+//     write(world->indexBuffer, commandBuffer, indexWriteInfos, true);
+//   });
+// }
 
 auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::mat4 projection, uint32_t width, uint32_t height, float clearColor) -> void {
   Surface &surface = *surfaces.get(surfaceHandle);
@@ -1688,29 +1725,6 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
 
   VK_CHECK(vkResetCommandBuffer(commandBuffer, 0));
   VK_CHECK(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo));
-
-  if (*world->vertexDirty) {
-    world->currentVertexCount = *world->vertexCount;
-    world->currentVertexData = *world->vertexData;
-    syncVertexBuffer(world, commandBuffer);
-  }
-
-  if (*world->indexDirty) {
-    world->currentIndexCount = *world->indexCount;
-    world->currentIndexData = *world->indexData;
-    syncIndexBuffer(world, commandBuffer);
-  }
-
-  if (*world->meshDirty) {
-    world->currentMeshCount = *world->meshCount;
-    world->currentMeshData = *world->meshData;
-    syncMeshBuffers(world, commandBuffer);
-  }
-
-  if (*world->transformDirty) {
-    world->currentTransformData = *world->transformData;
-    syncTransformBuffer(world, commandBuffer);
-  }
 
   VkImageMemoryBarrier2 imageMemoryBarrier2 = {};
   imageMemoryBarrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -1788,11 +1802,11 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   pushConstants.proj = projection;
   pushConstants.proj[1][1] *= -1;
 
-  vkCmdBindIndexBuffer(commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
-  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &descriptorSet, 0, nullptr);
-  vkCmdPushConstants(commandBuffer, pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(World::PushConstants), &pushConstants);
-  vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer->buffer, 0, world->currentMeshCount, sizeof(VkDrawIndexedIndirectCommand));
+  // vkCmdBindIndexBuffer(commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
+  // vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+  // vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &descriptorSet, 0, nullptr);
+  // vkCmdPushConstants(commandBuffer, pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(World::PushConstants), &pushConstants);
+  // vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer->buffer, 0, world->currentMeshCount, sizeof(VkDrawIndexedIndirectCommand));
 
   vkCmdEndRendering(commandBuffer);
 
