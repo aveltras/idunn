@@ -15,34 +15,38 @@
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
 
-module Idunn.Window where
+module Idunn.Window
+  ( Window (dimensions),
+    initWindow,
+  )
+where
 
-import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource
 import Data.Text
 import Data.Text.Foreign (withCString)
 import Data.Void
 import Foreign
 import Foreign.C.ConstPtr
-import Idunn.Gpu
 import Idunn.Platform
 import Idunn.Platform.FFI
+import UnliftIO
 
 data Window = Window
-  { ptr :: Ptr Void
+  { ptr :: Ptr Void,
+    dimensions :: IORef (Word32, Word32)
   }
 
-initWindow :: (MonadResource m) => Platform -> Gpu -> Text -> Word32 -> Word32 -> m Window
-initWindow platform gpu title width height = snd <$> allocate up down
+initWindow :: (MonadResource m) => Platform -> Text -> Word32 -> Word32 -> m (Window, Ptr Void)
+initWindow platform title width height = snd <$> allocate up down
   where
     up = withCString title $ \c'title ->
       alloca $ \pWindow ->
-        alloca $ \pConfig -> do
-          let config = Idunn_window_config platform.ptr gpu.ptr (ConstPtr c'title) width height
-          poke pConfig config
-          idunn_platform_window_init pConfig pWindow
-          Window <$> peek pWindow
-    down window = idunn_platform_window_uninit window.ptr
-
-render :: (MonadIO m) => Window -> Graphics vertex -> m ()
-render window graphics = error "todo" -- liftIO $ idunn_platform_window_render window.ptr graphics.handle
+        alloca $ \pPlatformWindow ->
+          alloca $ \pConfig -> do
+            let config = Idunn_window_config platform.ptr (ConstPtr c'title) width height pPlatformWindow
+            poke pConfig config
+            idunn_platform_window_init pConfig pWindow
+            dimensions <- newIORef (width, height)
+            window <- Window <$> peek pWindow <*> pure dimensions
+            (,) <$> pure window <*> peek pPlatformWindow
+    down (window, _) = idunn_platform_window_uninit window.ptr

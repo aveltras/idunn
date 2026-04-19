@@ -18,12 +18,12 @@
 #pragma once
 
 #include <idunn/platform.h>
-#include "gpu.hpp"
 
 #include <SDL3/SDL.h>
 #include <array>
 #include <map>
 #include <memory>
+#include <vector>
 
 static constexpr uint32_t kMaxIndexBase = SDLK_PLUSMINUS;
 static constexpr uint32_t kMinIndexScancode = SDLK_CAPSLOCK & ~SDLK_SCANCODE_MASK;
@@ -62,13 +62,10 @@ private:
 struct Window {
   explicit Window(idunn_window_config *config);
   ~Window();
-  auto render(Handle<Gpu::World> world) -> void;
 
 private:
   Platform *platform;
-  Gpu *gpu;
   uint32_t width;
   uint32_t height;
   std::unique_ptr<SDL_Window, void (*)(SDL_Window *)> window;
-  Handle<Gpu::Surface> surface;
 };

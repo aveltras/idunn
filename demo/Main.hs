@@ -60,7 +60,10 @@ game = do
   -- eEscape <- subscribe ScancodeEscape
   -- performEvent_ $ ffor eEscape $ const requestExit
 
-  performEvent_ $ ffor ePostBuild $ const $ liftIO $ print @String "toc"
+  -- performEvent_ $ ffor ePostBuild $ const $ do
+  --   entity <- newEntity (MeshBox @Vertex 5)
+  --   pure ()
+
   rec dynGameState <- holdDyn ScreenA eNextLevel
       eNextLevel <- switchHold never eeNextLevel
       eeNextLevel <- networkView $ ffor dynGameState $ \case

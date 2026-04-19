@@ -43,22 +43,65 @@ void idunn_gpu_uninit(void *gpu) {
   delete static_cast<Gpu *>(gpu);
 }
 
-void idunn_gpu_buffer_init(void *gpu, idunn_gpu_buffer_config *config, void **pBuffer) {}
-void idunn_gpu_buffer_uninit(void *gpu, void *buffer) {}
-void idunn_gpu_buffer_write(void *gpu, void *buffer, idunn_gpu_buffer_write_info *writeInfo) {}
-void idunn_gpu_render(void *gpu, void *surface, idunn_gpu_render_info *renderInfo) {}
-
-void idunn_gpu_world_init(void *gpu, idunn_gpu_world_config *config, uint64_t *pWorldHandle) {
-  *pWorldHandle = static_cast<Gpu *>(gpu)->create(config).raw();
+void idunn_gpu_command_init(void *gpu, void **pCommand) {
+  *pCommand = static_cast<Gpu *>(gpu)->acquireCommandBuffer();
 }
 
-void idunn_gpu_world_uninit(void *gpu, uint64_t worldHandle) {
-  static_cast<Gpu *>(gpu)->destroy(Handle<Gpu::World>(worldHandle));
+void idunn_gpu_command_submit(void *gpu, void *command) {
+  static_cast<Gpu *>(gpu)->submitCommandBuffer(static_cast<VkCommandBuffer>(command));
 }
 
-// void idunn_gpu_world_upload_meshes(void *gpu, uint64_t worldHandle, idunn_gpu_mesh_upload *uploadInfo) {
-//   static_cast<Gpu *>(gpu)->uploadMeshes(Handle<Gpu::World>(worldHandle), uploadInfo);
-// }
+void idunn_gpu_buffer_init(void *gpu, idunn_gpu_buffer_config *config, void **pBuffer) {
+  *pBuffer = new Gpu::Buffer(static_cast<Gpu *>(gpu), config);
+}
+
+void idunn_gpu_buffer_uninit(void *buffer) {
+  delete static_cast<Gpu::Buffer *>(buffer);
+}
+
+void idunn_gpu_buffer_write(void *buffer, void *command, idunn_gpu_buffer_write_info *writeInfo) {
+  static_cast<Gpu::Buffer *>(buffer)->write(static_cast<VkCommandBuffer>(command), writeInfo);
+}
+
+void idunn_gpu_pipeline_init(void *gpu, idunn_gpu_pipeline_config *config, void **pPipeline) {
+  *pPipeline = new Gpu::Pipeline(static_cast<Gpu *>(gpu), config);
+}
+
+void idunn_gpu_pipeline_uninit(void *pipeline) {
+  delete static_cast<Gpu::Pipeline *>(pipeline);
+}
+
+void idunn_gpu_sampler_init(void *gpu, idunn_gpu_sampler_config *config, void **pSampler) {
+  *pSampler = new Gpu::Sampler(static_cast<Gpu *>(gpu), config);
+}
+
+void idunn_gpu_sampler_uninit(void *sampler) {
+  delete static_cast<Gpu::Sampler *>(sampler);
+}
+
+void idunn_gpu_texture_init(void *gpu, idunn_gpu_texture_config *config, void **pTexture) {
+  *pTexture = new Gpu::Texture(static_cast<Gpu *>(gpu), config);
+}
+
+void idunn_gpu_texture_uninit(void *texture) {
+  delete static_cast<Gpu::Texture *>(texture);
+}
+
+void idunn_gpu_texture_write(void *texture, void *command, idunn_gpu_texture_write_info *writeInfo) {
+  static_cast<Gpu::Texture *>(texture)->write(static_cast<VkCommandBuffer>(command), writeInfo);
+}
+
+void idunn_gpu_surface_init(void *gpu, idunn_gpu_surface_config *config, void **pSurface) {
+  *pSurface = new Gpu::Surface(static_cast<Gpu *>(gpu), config);
+}
+
+void idunn_gpu_surface_uninit(void *surface) {
+  delete static_cast<Gpu::Surface *>(surface);
+}
+
+void idunn_gpu_surface_render(void *surface, idunn_gpu_render_info *renderInfo) {
+  static_cast<Gpu::Surface *>(surface)->render(renderInfo, 800, 600, 0); // TODO
+}
 }
 
 #define VK_CHECK(func)                     \
@@ -76,13 +119,7 @@ constexpr uint32_t kDescriptorBindingTextures = 0;
 constexpr uint32_t kDescriptorBindingSamplers = 1;
 constexpr uint32_t kDescriptorBindingStorageImages = 2;
 
-Gpu::Gpu(idunn_gpu_config *config)
-    : buffers(kMaxBindlessResources, [this](Buffer &buffer) -> void { destroy(buffer); }),
-      pipelines(kMaxBindlessResources, [this](Pipeline &pipeline) -> void { destroy(pipeline); }),
-      samplers(kMaxBindlessResources, [this](Sampler &sampler) -> void { destroy(sampler); }),
-      surfaces(1, [this](Surface &surface) -> void { destroy(surface); }),
-      textures(kMaxBindlessResources, [this](Texture &texture) -> void { destroy(texture); }),
-      worlds(2, [this](World &world) -> void { destroy(world); }) {
+Gpu::Gpu(idunn_gpu_config *config) {
   LOG_DEBUG("Gpu");
 
   VK_CHECK(volkInitialize());
@@ -193,21 +230,16 @@ Gpu::Gpu(idunn_gpu_config *config)
   }
 
   initSlangSession(config->shadersPath);
-  initDescriptors();
+  // initDescriptors();
 }
 
 Gpu::~Gpu() {
-  buffers.clear();
-  pipelines.clear();
-  samplers.clear();
-  textures.clear();
-  surfaces.clear();
   processAllTasks();
   for (auto &frameFence : frameFences) {
     vkDestroyFence(device, frameFence, allocationCallbacks);
   }
-  vkDestroyDescriptorPool(device, descriptorPool, allocationCallbacks);
-  vkDestroyDescriptorSetLayout(device, descriptorSetLayout, allocationCallbacks);
+  // vkDestroyDescriptorPool(device, descriptorPool, allocationCallbacks);
+  // vkDestroyDescriptorSetLayout(device, descriptorSetLayout, allocationCallbacks);
   vmaDestroyAllocator(allocator);
   vkDestroyCommandPool(device, graphicsCommandPool, allocationCallbacks);
   vkDestroyDevice(device, allocationCallbacks);
@@ -482,168 +514,168 @@ auto Gpu::initSlangSession(const char *shadersPath) -> void {
   globalSlangSession->createSession(sessionDesc, slangSession.writeRef());
 }
 
-auto Gpu::initDescriptors() -> void {
-  VkShaderStageFlags shaderStageFlags = {};
-  shaderStageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
-  shaderStageFlags |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-  shaderStageFlags |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-  shaderStageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
-  shaderStageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+// auto Gpu::initDescriptors() -> void {
+//   VkShaderStageFlags shaderStageFlags = {};
+//   shaderStageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+//   shaderStageFlags |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+//   shaderStageFlags |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+//   shaderStageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+//   shaderStageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
 
-  VkDescriptorSetLayoutBinding texturesBinding = {};
-  texturesBinding.binding = kDescriptorBindingTextures;
-  texturesBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  texturesBinding.descriptorCount = kMaxBindlessResources;
-  texturesBinding.stageFlags = shaderStageFlags;
-  texturesBinding.pImmutableSamplers = nullptr;
+//   VkDescriptorSetLayoutBinding texturesBinding = {};
+//   texturesBinding.binding = kDescriptorBindingTextures;
+//   texturesBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+//   texturesBinding.descriptorCount = kMaxBindlessResources;
+//   texturesBinding.stageFlags = shaderStageFlags;
+//   texturesBinding.pImmutableSamplers = nullptr;
 
-  VkDescriptorSetLayoutBinding samplersBinding = {};
-  samplersBinding.binding = kDescriptorBindingSamplers;
-  samplersBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-  samplersBinding.descriptorCount = kMaxBindlessResources;
-  samplersBinding.stageFlags = shaderStageFlags;
-  samplersBinding.pImmutableSamplers = nullptr;
+//   VkDescriptorSetLayoutBinding samplersBinding = {};
+//   samplersBinding.binding = kDescriptorBindingSamplers;
+//   samplersBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+//   samplersBinding.descriptorCount = kMaxBindlessResources;
+//   samplersBinding.stageFlags = shaderStageFlags;
+//   samplersBinding.pImmutableSamplers = nullptr;
 
-  VkDescriptorSetLayoutBinding storageImagesBinding = {};
-  storageImagesBinding.binding = kDescriptorBindingStorageImages;
-  storageImagesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  storageImagesBinding.descriptorCount = kMaxBindlessResources;
-  storageImagesBinding.stageFlags = shaderStageFlags;
-  storageImagesBinding.pImmutableSamplers = nullptr;
+//   VkDescriptorSetLayoutBinding storageImagesBinding = {};
+//   storageImagesBinding.binding = kDescriptorBindingStorageImages;
+//   storageImagesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+//   storageImagesBinding.descriptorCount = kMaxBindlessResources;
+//   storageImagesBinding.stageFlags = shaderStageFlags;
+//   storageImagesBinding.pImmutableSamplers = nullptr;
 
-  VkDescriptorBindingFlagsEXT descriptorBindingFlagsEXT = {};
-  descriptorBindingFlagsEXT |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-  descriptorBindingFlagsEXT |= VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
-  descriptorBindingFlagsEXT |= VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+//   VkDescriptorBindingFlagsEXT descriptorBindingFlagsEXT = {};
+//   descriptorBindingFlagsEXT |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+//   descriptorBindingFlagsEXT |= VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+//   descriptorBindingFlagsEXT |= VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
-  std::array<VkDescriptorSetLayoutBinding, kDescriptorBindingCount> descriptorSetLayoutBindings;
-  descriptorSetLayoutBindings[kDescriptorBindingTextures] = texturesBinding;
-  descriptorSetLayoutBindings[kDescriptorBindingSamplers] = samplersBinding;
-  descriptorSetLayoutBindings[kDescriptorBindingStorageImages] = storageImagesBinding;
+//   std::array<VkDescriptorSetLayoutBinding, kDescriptorBindingCount> descriptorSetLayoutBindings;
+//   descriptorSetLayoutBindings[kDescriptorBindingTextures] = texturesBinding;
+//   descriptorSetLayoutBindings[kDescriptorBindingSamplers] = samplersBinding;
+//   descriptorSetLayoutBindings[kDescriptorBindingStorageImages] = storageImagesBinding;
 
-  std::array<VkDescriptorBindingFlags, kDescriptorBindingCount> descriptorBindingFlags;
-  descriptorBindingFlags[kDescriptorBindingTextures] = descriptorBindingFlagsEXT;
-  descriptorBindingFlags[kDescriptorBindingSamplers] = descriptorBindingFlagsEXT;
-  descriptorBindingFlags[kDescriptorBindingStorageImages] = descriptorBindingFlagsEXT;
+//   std::array<VkDescriptorBindingFlags, kDescriptorBindingCount> descriptorBindingFlags;
+//   descriptorBindingFlags[kDescriptorBindingTextures] = descriptorBindingFlagsEXT;
+//   descriptorBindingFlags[kDescriptorBindingSamplers] = descriptorBindingFlagsEXT;
+//   descriptorBindingFlags[kDescriptorBindingStorageImages] = descriptorBindingFlagsEXT;
 
-  VkDescriptorSetLayoutBindingFlagsCreateInfo descriptorSetLayoutBindingFlagsCreateInfo = {};
-  descriptorSetLayoutBindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-  descriptorSetLayoutBindingFlagsCreateInfo.bindingCount = kDescriptorBindingCount;
-  descriptorSetLayoutBindingFlagsCreateInfo.pBindingFlags = descriptorBindingFlags.data();
+//   VkDescriptorSetLayoutBindingFlagsCreateInfo descriptorSetLayoutBindingFlagsCreateInfo = {};
+//   descriptorSetLayoutBindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
+//   descriptorSetLayoutBindingFlagsCreateInfo.bindingCount = kDescriptorBindingCount;
+//   descriptorSetLayoutBindingFlagsCreateInfo.pBindingFlags = descriptorBindingFlags.data();
 
-  VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
-  descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  descriptorSetLayoutCreateInfo.pNext = &descriptorSetLayoutBindingFlagsCreateInfo;
-  descriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT;
-  descriptorSetLayoutCreateInfo.bindingCount = kDescriptorBindingCount;
-  descriptorSetLayoutCreateInfo.pBindings = descriptorSetLayoutBindings.data();
-  VK_CHECK(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, allocationCallbacks, &descriptorSetLayout));
+//   VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
+//   descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+//   descriptorSetLayoutCreateInfo.pNext = &descriptorSetLayoutBindingFlagsCreateInfo;
+//   descriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT;
+//   descriptorSetLayoutCreateInfo.bindingCount = kDescriptorBindingCount;
+//   descriptorSetLayoutCreateInfo.pBindings = descriptorSetLayoutBindings.data();
+//   VK_CHECK(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, allocationCallbacks, &descriptorSetLayout));
 
-  std::array<VkDescriptorPoolSize, kDescriptorBindingCount> descriptorPoolSizes;
-  VkDescriptorPoolSize descriptorPoolSize = {};
-  descriptorPoolSize.descriptorCount = kMaxBindlessResources;
-  descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  descriptorPoolSizes[kDescriptorBindingTextures] = descriptorPoolSize;
-  descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_SAMPLER;
-  descriptorPoolSizes[kDescriptorBindingSamplers] = descriptorPoolSize;
-  descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  descriptorPoolSizes[kDescriptorBindingStorageImages] = descriptorPoolSize;
+//   std::array<VkDescriptorPoolSize, kDescriptorBindingCount> descriptorPoolSizes;
+//   VkDescriptorPoolSize descriptorPoolSize = {};
+//   descriptorPoolSize.descriptorCount = kMaxBindlessResources;
+//   descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+//   descriptorPoolSizes[kDescriptorBindingTextures] = descriptorPoolSize;
+//   descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_SAMPLER;
+//   descriptorPoolSizes[kDescriptorBindingSamplers] = descriptorPoolSize;
+//   descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+//   descriptorPoolSizes[kDescriptorBindingStorageImages] = descriptorPoolSize;
 
-  VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
-  descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  descriptorPoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-  descriptorPoolCreateInfo.maxSets = 1;
-  descriptorPoolCreateInfo.poolSizeCount = kDescriptorBindingCount;
-  descriptorPoolCreateInfo.pPoolSizes = descriptorPoolSizes.data();
-  VK_CHECK(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, allocationCallbacks, &descriptorPool));
+//   VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
+//   descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+//   descriptorPoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+//   descriptorPoolCreateInfo.maxSets = 1;
+//   descriptorPoolCreateInfo.poolSizeCount = kDescriptorBindingCount;
+//   descriptorPoolCreateInfo.pPoolSizes = descriptorPoolSizes.data();
+//   VK_CHECK(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, allocationCallbacks, &descriptorPool));
 
-  VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
-  descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  descriptorSetAllocateInfo.descriptorPool = descriptorPool;
-  descriptorSetAllocateInfo.descriptorSetCount = 1;
-  descriptorSetAllocateInfo.pSetLayouts = &descriptorSetLayout;
-  VK_CHECK(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
+//   VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
+//   descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+//   descriptorSetAllocateInfo.descriptorPool = descriptorPool;
+//   descriptorSetAllocateInfo.descriptorSetCount = 1;
+//   descriptorSetAllocateInfo.pSetLayouts = &descriptorSetLayout;
+//   VK_CHECK(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
 
-  Sampler::Desc defaultSamplerDesc = {};
-  defaultSamplerDesc.addressMode = Sampler::AddressMode::Repeat;
-#ifndef NDEBUG
-  defaultSamplerDesc.debugName = "Default Sampler";
-#endif
-  defaultSampler = create(defaultSamplerDesc);
+//   Sampler::Desc defaultSamplerDesc = {};
+//   defaultSamplerDesc.addressMode = Sampler::AddressMode::Repeat;
+// #ifndef NDEBUG
+//   defaultSamplerDesc.debugName = "Default Sampler";
+// #endif
+//   defaultSampler = create(defaultSamplerDesc);
 
-  Texture::Desc defaultTextureDesc = {};
-  defaultTextureDesc.usage = Texture::Usage::Color2D;
-  defaultTextureDesc.width = 4;
-  defaultTextureDesc.height = 4;
-#ifndef NDEBUG
-  defaultTextureDesc.debugName = "Default Texture";
-#endif
-  defaultTexture = create(defaultTextureDesc);
+//   Texture::Desc defaultTextureDesc = {};
+//   defaultTextureDesc.usage = Texture::Usage::Color2D;
+//   defaultTextureDesc.width = 4;
+//   defaultTextureDesc.height = 4;
+// #ifndef NDEBUG
+//   defaultTextureDesc.debugName = "Default Texture";
+// #endif
+//   defaultTexture = create(defaultTextureDesc);
 
-  syncDescriptors();
-}
+//   syncDescriptors();
+// }
 
-auto Gpu::syncDescriptors() -> void {
-  std::vector<VkWriteDescriptorSet> writeDescriptorSets = {};
+// auto Gpu::syncDescriptors() -> void {
+//   std::vector<VkWriteDescriptorSet> writeDescriptorSets = {};
 
-  std::vector<VkDescriptorImageInfo> textureInfos;
-  std::vector<VkDescriptorImageInfo> samplerInfos;
+//   std::vector<VkDescriptorImageInfo> textureInfos;
+//   std::vector<VkDescriptorImageInfo> samplerInfos;
 
-  VkWriteDescriptorSet writeDescriptorSet = {};
-  writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writeDescriptorSet.dstSet = descriptorSet;
-  writeDescriptorSet.dstArrayElement = 0;
+//   VkWriteDescriptorSet writeDescriptorSet = {};
+//   writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+//   writeDescriptorSet.dstSet = descriptorSet;
+//   writeDescriptorSet.dstArrayElement = 0;
 
-  LOG_ERROR("SYNC");
+//   LOG_ERROR("SYNC");
 
-  if (descriptorSync.has(DescriptorSync::SampledImage)) {
-    Texture *texture = textures.get(defaultTexture);
+//   if (descriptorSync.has(DescriptorSync::SampledImage)) {
+//     Texture *texture = textures.get(defaultTexture);
 
-    VkDescriptorImageInfo descriptorImageInfo = {};
-    descriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    descriptorImageInfo.imageView = texture->imageView;
+//     VkDescriptorImageInfo descriptorImageInfo = {};
+//     descriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+//     descriptorImageInfo.imageView = texture->imageView;
 
-    textureInfos.resize(textures.getSize(), descriptorImageInfo);
-    auto textureIdx = 0;
+//     textureInfos.resize(textures.getSize(), descriptorImageInfo);
+//     auto textureIdx = 0;
 
-    for (auto &item : textures) {
-      descriptorImageInfo.imageView = item.imageView;
-      textureInfos[textureIdx++] = descriptorImageInfo;
-    }
+//     for (auto &item : textures) {
+//       descriptorImageInfo.imageView = item.imageView;
+//       textureInfos[textureIdx++] = descriptorImageInfo;
+//     }
 
-    writeDescriptorSet.dstBinding = kDescriptorBindingTextures;
-    writeDescriptorSet.descriptorCount = textureInfos.size();
-    writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writeDescriptorSet.pImageInfo = textureInfos.data();
-    writeDescriptorSets.emplace_back(writeDescriptorSet);
-  }
+//     writeDescriptorSet.dstBinding = kDescriptorBindingTextures;
+//     writeDescriptorSet.descriptorCount = textureInfos.size();
+//     writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+//     writeDescriptorSet.pImageInfo = textureInfos.data();
+//     writeDescriptorSets.emplace_back(writeDescriptorSet);
+//   }
 
-  if (descriptorSync.has(DescriptorSync::Sampler)) {
-    Sampler *sampler = samplers.get(defaultSampler);
-    VkDescriptorImageInfo descriptorImageInfo = {};
-    descriptorImageInfo.sampler = sampler->sampler;
+//   if (descriptorSync.has(DescriptorSync::Sampler)) {
+//     Sampler *sampler = samplers.get(defaultSampler);
+//     VkDescriptorImageInfo descriptorImageInfo = {};
+//     descriptorImageInfo.sampler = sampler->sampler;
 
-    samplerInfos.resize(samplers.getSize(), descriptorImageInfo);
-    auto samplerIdx = 0;
+//     samplerInfos.resize(samplers.getSize(), descriptorImageInfo);
+//     auto samplerIdx = 0;
 
-    for (auto &item : samplers) {
-      descriptorImageInfo.sampler = item.sampler;
-      samplerInfos[samplerIdx++] = descriptorImageInfo;
-    }
+//     for (auto &item : samplers) {
+//       descriptorImageInfo.sampler = item.sampler;
+//       samplerInfos[samplerIdx++] = descriptorImageInfo;
+//     }
 
-    writeDescriptorSet.dstBinding = kDescriptorBindingSamplers;
-    writeDescriptorSet.descriptorCount = samplerInfos.size();
-    writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writeDescriptorSet.pImageInfo = samplerInfos.data();
-    writeDescriptorSets.emplace_back(writeDescriptorSet);
-  }
+//     writeDescriptorSet.dstBinding = kDescriptorBindingSamplers;
+//     writeDescriptorSet.descriptorCount = samplerInfos.size();
+//     writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+//     writeDescriptorSet.pImageInfo = samplerInfos.data();
+//     writeDescriptorSets.emplace_back(writeDescriptorSet);
+//   }
 
-  if (!writeDescriptorSets.empty()) {
-    vkUpdateDescriptorSets(device, writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
-  }
+//   if (!writeDescriptorSets.empty()) {
+//     vkUpdateDescriptorSets(device, writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
+//   }
 
-  descriptorSync = DescriptorSync::None;
-}
+//   descriptorSync = DescriptorSync::None;
+// }
 
 auto Gpu::defer(std::packaged_task<void()> &&task) -> void {
   VkFence fence = frameFences[frameNumber % frameFences.size()];
@@ -675,42 +707,45 @@ auto Gpu::logSlangDiagnostics(slang::IBlob *diagnosticsBlob) -> void {
   }
 }
 
-auto Gpu::create(Buffer::Desc &description) -> Handle<Buffer> {
+Gpu::Buffer::Buffer(Gpu *gpu, idunn_gpu_buffer_config *config) : gpu(gpu) {
   LOG_DEBUG("Buffer");
-  Buffer buffer = {};
 
-  switch (description.usage) {
-  case Buffer::Usage::Index:
-    buffer.usageFlags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  switch (config->usage) {
+  case IDUNN_GPU_BUFFER_USAGE_INDEX:
+    usageFlags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     break;
-  case Buffer::Usage::Vertex:
-    buffer.usageFlags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    buffer.usageFlags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  case IDUNN_GPU_BUFFER_USAGE_VERTEX:
+    usageFlags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    usageFlags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     break;
-  case Buffer::Usage::Indirect:
-    buffer.usageFlags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+  case IDUNN_GPU_BUFFER_USAGE_INDIRECT:
+    usageFlags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     break;
-  case Buffer::Usage::Storage:
-    buffer.usageFlags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    buffer.usageFlags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  case IDUNN_GPU_BUFFER_USAGE_STORAGE:
+    usageFlags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    usageFlags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     break;
   }
 
-#ifndef NDEBUG
-  buffer.debugName = description.debugName;
-#endif
+  // #ifndef NDEBUG
+  //   buffer.debugName = description.debugName;
+  // #endif
 
-  return create(buffer, description.size);
+  resize(config->capacity);
 }
 
-auto Gpu::create(Buffer &buffer, size_t size) -> Handle<Buffer> {
+Gpu::Buffer::~Buffer() {
+  freeResources();
+}
+
+auto Gpu::Buffer::resize(size_t capacity) -> void {
   LOG_DEBUG("Buffer");
 
   VkBufferCreateInfo bufferCreateInfo = {};
   bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferCreateInfo.flags = 0;
-  bufferCreateInfo.size = std::max<VkDeviceSize>(size, 1024);
-  bufferCreateInfo.usage = buffer.usageFlags;
+  bufferCreateInfo.size = std::max<VkDeviceSize>(capacity, 1024);
+  bufferCreateInfo.usage = usageFlags;
   bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   bufferCreateInfo.queueFamilyIndexCount = 0;
   bufferCreateInfo.pQueueFamilyIndices = nullptr;
@@ -721,67 +756,61 @@ auto Gpu::create(Buffer &buffer, size_t size) -> Handle<Buffer> {
   allocationCreateInfo.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
   allocationCreateInfo.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
+  LOG_ERROR("size: %i", bufferCreateInfo.size);
+
   VK_CHECK(vmaCreateBuffer(
-      allocator,
+      gpu->allocator,
       &bufferCreateInfo,
       &allocationCreateInfo,
-      &buffer.buffer,
-      &buffer.allocation,
-      &buffer.allocationInfo));
+      &buffer,
+      &allocation,
+      &allocationInfo));
 
-  if ((buffer.usageFlags & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0U) {
+  if ((usageFlags & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0U) {
     VkBufferDeviceAddressInfo bufferDeviceAddressInfo = {};
     bufferDeviceAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-    bufferDeviceAddressInfo.buffer = buffer.buffer;
-    buffer.address = vkGetBufferDeviceAddress(device, &bufferDeviceAddressInfo);
+    bufferDeviceAddressInfo.buffer = buffer;
+    address = vkGetBufferDeviceAddress(gpu->device, &bufferDeviceAddressInfo);
   }
 
-  vmaGetAllocationMemoryProperties(allocator, buffer.allocation, &buffer.memoryFlags);
+  vmaGetAllocationMemoryProperties(gpu->allocator, allocation, &memoryFlags);
 
-#ifndef NDEBUG
-  VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
-  debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-  debugUtilsObjectNameInfoEXT.pObjectName = buffer.debugName;
-  debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_BUFFER;
-  debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)buffer.buffer;
-  VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
-#endif
-
-  return buffers.allocate(nullptr, buffer);
+  // #ifndef NDEBUG
+  //   VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
+  //   debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+  //   debugUtilsObjectNameInfoEXT.pObjectName = debugName;
+  //   debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_BUFFER;
+  //   debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)buffer;
+  //   VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
+  // #endif
 }
 
-auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std::vector<Buffer::Write> &writeInfos, bool append) -> void {
-  Buffer &buffer = *buffers.get(handle);
+auto Gpu::Buffer::write(VkCommandBuffer commandBuffer, idunn_gpu_buffer_write_info *writeInfo) -> void {
+  size_t totalWriteSize = writeInfo->size;
+  size_t totalSize = allocationInfo.size + totalWriteSize;
 
-  size_t totalWriteSize = 0;
-  for (const auto &writeInfo : writeInfos) {
-    totalWriteSize += writeInfo.size;
-  }
+  auto writeOffset = writeInfo->append ? allocationInfo.size : 0;
 
-  size_t totalSize = buffer.size + totalWriteSize;
+  LOG_ERROR("totalSize: %i, totalWriteSize: %i", totalWriteSize);
 
-  auto writeOffset = append ? buffer.size : 0;
-
-  if (totalSize > buffer.allocationInfo.size) {
-    auto *oldBuffer = buffer.buffer;
-    auto oldSize = buffer.size;
-    destroy(buffer);
-    create(buffer, std::max(buffer.allocationInfo.size * 2, totalSize));
+  if (totalSize > allocationInfo.size) {
+    LOG_ERROR("ICI");
+    auto *oldBuffer = buffer;
+    auto oldSize = allocationInfo.size;
+    freeResources();
+    resize(std::max(allocationInfo.size * 2, totalSize));
     VkBufferCopy copyRegion = {};
     copyRegion.srcOffset = 0;
     copyRegion.dstOffset = 0;
     copyRegion.size = oldSize;
-    vkCmdCopyBuffer(commandBuffer, oldBuffer, buffer.buffer, 1, &copyRegion);
+    vkCmdCopyBuffer(commandBuffer, oldBuffer, buffer, 1, &copyRegion);
   }
 
-  if ((buffer.memoryFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U) {
-    auto *destinationPtr = static_cast<uint8_t *>(buffer.allocationInfo.pMappedData) + writeOffset;
-    for (const auto &writeInfo : writeInfos) {
-      memcpy(destinationPtr, writeInfo.data, writeInfo.size);
-      destinationPtr += writeInfo.size;
-    }
+  if ((memoryFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U) {
+    auto *destinationPtr = static_cast<uint8_t *>(allocationInfo.pMappedData) + writeOffset;
+    memcpy(destinationPtr, writeInfo->data, writeInfo->size);
 
-    VK_CHECK(vmaFlushAllocation(allocator, buffer.allocation, 0, VK_WHOLE_SIZE));
+    VK_CHECK(vmaFlushAllocation(gpu->allocator, allocation, 0, VK_WHOLE_SIZE));
 
     VkBufferMemoryBarrier bufferMemoryBarrier = {};
     bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -791,7 +820,7 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std:
                                         VK_ACCESS_SHADER_READ_BIT;
     bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufferMemoryBarrier.buffer = buffer.buffer;
+    bufferMemoryBarrier.buffer = buffer;
     bufferMemoryBarrier.offset = 0;
     bufferMemoryBarrier.size = VK_WHOLE_SIZE;
 
@@ -826,7 +855,7 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std:
     VmaAllocationInfo stagingAllocationInfo;
 
     VK_CHECK(vmaCreateBuffer(
-        allocator,
+        gpu->allocator,
         &stagingBufferCreateInfo,
         &stagingAllocationCreateInfo,
         &stagingBuffer,
@@ -834,12 +863,9 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std:
         &stagingAllocationInfo));
 
     auto *destinationPtr = static_cast<uint8_t *>(stagingAllocationInfo.pMappedData);
-    for (const auto &writeInfo : writeInfos) {
-      memcpy(destinationPtr, writeInfo.data, writeInfo.size);
-      destinationPtr += writeInfo.size;
-    }
+    memcpy(destinationPtr, writeInfo->data, writeInfo->size);
 
-    VK_CHECK(vmaFlushAllocation(allocator, stagingAllocation, 0, VK_WHOLE_SIZE));
+    VK_CHECK(vmaFlushAllocation(gpu->allocator, stagingAllocation, 0, VK_WHOLE_SIZE));
 
     VkBufferMemoryBarrier bufferMemoryBarrier = {};
     bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -868,7 +894,7 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std:
     bufferCopy.dstOffset = writeOffset;
     bufferCopy.size = totalSize;
 
-    vkCmdCopyBuffer(commandBuffer, stagingBuffer, buffer.buffer, 1, &bufferCopy);
+    vkCmdCopyBuffer(commandBuffer, stagingBuffer, buffer, 1, &bufferCopy);
 
     VkBufferMemoryBarrier bufferMemoryBarrier2 = {};
     bufferMemoryBarrier2.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -876,7 +902,7 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std:
     bufferMemoryBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
     bufferMemoryBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bufferMemoryBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufferMemoryBarrier2.buffer = buffer.buffer;
+    bufferMemoryBarrier2.buffer = buffer;
     bufferMemoryBarrier2.offset = 0;
     bufferMemoryBarrier2.size = VK_WHOLE_SIZE;
 
@@ -894,28 +920,21 @@ auto Gpu::write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std:
 
     // TODO: destroy staging buffer
   }
-
-  buffer.size = totalSize;
 }
 
-auto Gpu::destroy(Handle<Buffer> buffer) -> void {
-  buffers.free(buffer);
-}
-
-auto Gpu::destroy(Buffer &buffer) -> void {
-  defer(std::packaged_task<void()>([&, vkBuffer = buffer.buffer, vkAllocation = buffer.allocation]() -> void {
+auto Gpu::Buffer::freeResources() -> void {
+  gpu->defer(std::packaged_task<void()>([allocator = gpu->allocator, vkBuffer = buffer, vkAllocation = allocation]() -> void {
     vmaDestroyBuffer(allocator, vkBuffer, vkAllocation);
   }));
 }
 
-auto Gpu::create(Pipeline::Desc &description) -> Handle<Pipeline> {
+Gpu::Pipeline::Pipeline(Gpu *gpu, idunn_gpu_pipeline_config *config) : gpu(gpu) {
   LOG_DEBUG("Pipeline");
-  Pipeline pipeline = {};
 
   Slang::ComPtr<slang::IModule> slangModule;
   {
     Slang::ComPtr<slang::IBlob> diagnosticsBlob;
-    slangModule = slangSession->loadModule(description.shader.c_str(), diagnosticsBlob.writeRef());
+    slangModule = gpu->slangSession->loadModule(config->shader, diagnosticsBlob.writeRef());
     logSlangDiagnostics(diagnosticsBlob);
     if (slangModule == nullptr) {
       throw "todo";
@@ -948,7 +967,7 @@ auto Gpu::create(Pipeline::Desc &description) -> Handle<Pipeline> {
   shaderModuleCreateInfo.pCode = static_cast<const uint32_t *>(spirvCode->getBufferPointer());
 
   VkShaderModule shaderModule = VK_NULL_HANDLE;
-  VK_CHECK(vkCreateShaderModule(device, &shaderModuleCreateInfo, allocationCallbacks, &shaderModule));
+  VK_CHECK(vkCreateShaderModule(gpu->device, &shaderModuleCreateInfo, gpu->allocationCallbacks, &shaderModule));
 
   SpvReflectShaderModule reflectModule = {};
   SpvReflectResult result = spvReflectCreateShaderModule(shaderModuleCreateInfo.codeSize, shaderModuleCreateInfo.pCode, &reflectModule);
@@ -1119,7 +1138,7 @@ auto Gpu::create(Pipeline::Desc &description) -> Handle<Pipeline> {
   rasterizationStateCreateInfo.rasterizerDiscardEnable = VK_FALSE;
   rasterizationStateCreateInfo.polygonMode = VK_POLYGON_MODE_LINE;
   rasterizationStateCreateInfo.cullMode = VK_CULL_MODE_NONE;
-  rasterizationStateCreateInfo.frontFace = description.windingOrder == Pipeline::WindingOrder::ClockWise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizationStateCreateInfo.frontFace = config->windingOrder == IDUNN_GPU_PIPELINE_WINDING_ORDER_CLOCKWISE ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
   rasterizationStateCreateInfo.depthBiasEnable = VK_FALSE;
   rasterizationStateCreateInfo.depthBiasSlopeFactor = 1.0F;
   rasterizationStateCreateInfo.lineWidth = 1.0F;
@@ -1167,12 +1186,12 @@ auto Gpu::create(Pipeline::Desc &description) -> Handle<Pipeline> {
 
   VkPipelineLayoutCreateInfo layoutCreateInfo = {};
   layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layoutCreateInfo.pSetLayouts = &descriptorSetLayout;
+  layoutCreateInfo.pSetLayouts = &gpu->descriptorSetLayout;
   layoutCreateInfo.setLayoutCount = 1;
   layoutCreateInfo.pushConstantRangeCount = pushConstantRanges.size();
   layoutCreateInfo.pPushConstantRanges = pushConstantRanges.data();
 
-  VK_CHECK(vkCreatePipelineLayout(device, &layoutCreateInfo, allocationCallbacks, &pipeline.layout));
+  VK_CHECK(vkCreatePipelineLayout(gpu->device, &layoutCreateInfo, gpu->allocationCallbacks, &layout));
 
   auto colorAttachmentFormat = VK_FORMAT_B8G8R8A8_SRGB;
   VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
@@ -1194,52 +1213,44 @@ auto Gpu::create(Pipeline::Desc &description) -> Handle<Pipeline> {
   graphicsPipelineCreateInfo.pDepthStencilState = &depthStencilStateCreateInfo;
   graphicsPipelineCreateInfo.pColorBlendState = &colorBlendStateCreateInfo;
   graphicsPipelineCreateInfo.pDynamicState = &dynamicStateCreateInfo;
-  graphicsPipelineCreateInfo.layout = pipeline.layout;
+  graphicsPipelineCreateInfo.layout = layout;
 
   VK_CHECK(vkCreateGraphicsPipelines(
-      device,
+      gpu->device,
       VK_NULL_HANDLE, // TODO
       1,
       &graphicsPipelineCreateInfo,
-      allocationCallbacks,
-      &pipeline.pipeline));
+      gpu->allocationCallbacks,
+      &pipeline));
 
   spvReflectDestroyShaderModule(&reflectModule);
-  vkDestroyShaderModule(device, shaderModule, allocationCallbacks);
+  vkDestroyShaderModule(gpu->device, shaderModule, gpu->allocationCallbacks);
 
 #ifndef NDEBUG
-  std::string pipelineName = std::format("{} (Pipeline)", description.debugName);
-  std::string layoutName = std::format("{} (Layout)", description.debugName);
-  VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
-  debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-  debugUtilsObjectNameInfoEXT.pObjectName = pipelineName.c_str();
-  debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_PIPELINE;
-  debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)pipeline.pipeline;
-  VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
-  debugUtilsObjectNameInfoEXT.pObjectName = layoutName.c_str();
-  debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_PIPELINE_LAYOUT;
-  debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)pipeline.layout;
-  VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+  // std::string pipelineName = std::format("{} (Pipeline)", config->debugName);
+  // std::string layoutName = std::format("{} (Layout)", config->debugName);
+  // VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
+  // debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+  // debugUtilsObjectNameInfoEXT.pObjectName = pipelineName.c_str();
+  // debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_PIPELINE;
+  // debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)pipeline;
+  // VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
+  // debugUtilsObjectNameInfoEXT.pObjectName = layoutName.c_str();
+  // debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_PIPELINE_LAYOUT;
+  // debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)layout;
+  // VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 #endif
-
-  return pipelines.allocate(nullptr, pipeline);
 }
 
-auto Gpu::destroy(Handle<Pipeline> pipeline) -> void {
-  pipelines.free(pipeline);
-}
-
-auto Gpu::destroy(Pipeline &pipeline) -> void {
-  defer(std::packaged_task<void()>([&, vkPipeline = pipeline.pipeline, vkPipelineLayout = pipeline.layout]() -> void {
+Gpu::Pipeline::~Pipeline() {
+  gpu->defer(std::packaged_task<void()>([device = gpu->device, allocationCallbacks = gpu->allocationCallbacks, vkPipeline = pipeline, vkPipelineLayout = layout]() -> void {
     vkDestroyPipeline(device, vkPipeline, allocationCallbacks);
     vkDestroyPipelineLayout(device, vkPipelineLayout, allocationCallbacks);
   }));
 }
 
-auto Gpu::create(Sampler::Desc &description) -> Handle<Sampler> {
+Gpu::Sampler::Sampler(Gpu *gpu, idunn_gpu_sampler_config *config) : gpu(gpu) {
   LOG_DEBUG("Sampler");
-
-  Sampler sampler = {};
 
   VkSamplerCreateInfo samplerCreateInfo = {};
   samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1248,9 +1259,9 @@ auto Gpu::create(Sampler::Desc &description) -> Handle<Sampler> {
   samplerCreateInfo.magFilter = VK_FILTER_LINEAR;
   samplerCreateInfo.minFilter = VK_FILTER_LINEAR;
   samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-  samplerCreateInfo.addressModeU = static_cast<VkSamplerAddressMode>(description.addressMode);
-  samplerCreateInfo.addressModeV = static_cast<VkSamplerAddressMode>(description.addressMode);
-  samplerCreateInfo.addressModeW = static_cast<VkSamplerAddressMode>(description.addressMode);
+  samplerCreateInfo.addressModeU = static_cast<VkSamplerAddressMode>(config->addressMode);
+  samplerCreateInfo.addressModeV = static_cast<VkSamplerAddressMode>(config->addressMode);
+  samplerCreateInfo.addressModeW = static_cast<VkSamplerAddressMode>(config->addressMode);
   samplerCreateInfo.mipLodBias = 0.0F;
   samplerCreateInfo.anisotropyEnable = VK_FALSE;
   samplerCreateInfo.maxAnisotropy = 0.0F;
@@ -1260,101 +1271,92 @@ auto Gpu::create(Sampler::Desc &description) -> Handle<Sampler> {
   samplerCreateInfo.maxLod = 0.0F;
   samplerCreateInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
   samplerCreateInfo.unnormalizedCoordinates = VK_FALSE;
-  VK_CHECK(vkCreateSampler(device, &samplerCreateInfo, allocationCallbacks, &sampler.sampler));
+  VK_CHECK(vkCreateSampler(gpu->device, &samplerCreateInfo, gpu->allocationCallbacks, &sampler));
 #ifndef NDEBUG
-  VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
-  debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-  debugUtilsObjectNameInfoEXT.pObjectName = description.debugName;
-  debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SAMPLER;
-  debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)sampler.sampler;
-  VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+  // VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
+  // debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+  // debugUtilsObjectNameInfoEXT.pObjectName = config->debugName;
+  // debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SAMPLER;
+  // debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)sampler;
+  // VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 #endif
-
-  return samplers.allocate(nullptr, sampler);
 }
 
-auto Gpu::destroy(Handle<Sampler> sampler) -> void {
-  samplers.free(sampler);
-}
-
-auto Gpu::destroy(Sampler &sampler) -> void {
-  defer(std::packaged_task<void()>([&, vkSampler = sampler.sampler]() -> void {
+Gpu::Sampler::~Sampler() {
+  gpu->defer(std::packaged_task<void()>([device = gpu->device, allocationCallbacks = gpu->allocationCallbacks, vkSampler = sampler]() -> void {
     vkDestroySampler(device, vkSampler, allocationCallbacks);
   }));
 }
 
-auto Gpu::create(Texture::Desc &description) -> Handle<Texture> {
+Gpu::Texture::Texture(Gpu *gpu, idunn_gpu_texture_config *config) : gpu(gpu) {
   LOG_DEBUG("Texture");
-  Texture texture = {};
 
-  VkExtent3D extent = {};
-  extent.width = description.width;
-  extent.height = description.height;
-  extent.depth = description.depth;
+  extent.width = config->width;
+  extent.height = config->height;
+  extent.depth = config->depth;
 
-  texture.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-  texture.levelCount = 1;
-  texture.layerCount = 1;
-  texture.extent = extent;
+  layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  levelCount = 1;
+  layerCount = 1;
 
-  switch (description.usage) {
-  case Texture::Usage::Color2D:
-    texture.imageType = VK_IMAGE_TYPE_2D;
-    texture.imageViewType = VK_IMAGE_VIEW_TYPE_2D;
-    texture.format = VK_FORMAT_R8G8B8A8_SRGB;
-    texture.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
-    texture.usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
-    texture.usageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  switch (config->usage) {
+  case IDUNN_GPU_TEXTURE_USAGE_COLOR_2D:
+    imageType = VK_IMAGE_TYPE_2D;
+    imageViewType = VK_IMAGE_VIEW_TYPE_2D;
+    format = VK_FORMAT_R8G8B8A8_SRGB;
+    aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+    usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    usageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     break;
-  case Texture::Usage::TextCurves:
-    texture.imageType = VK_IMAGE_TYPE_2D;
-    texture.imageViewType = VK_IMAGE_VIEW_TYPE_2D;
-    texture.format = VK_FORMAT_R16G16B16A16_UINT;
-    texture.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
-    texture.usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
-    texture.usageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  case IDUNN_GPU_TEXTURE_USAGE_COLOR_TEXT_CURVES:
+    imageType = VK_IMAGE_TYPE_2D;
+    imageViewType = VK_IMAGE_VIEW_TYPE_2D;
+    format = VK_FORMAT_R16G16B16A16_UINT;
+    aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+    usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    usageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     break;
-  case Texture::Usage::TextBands:
-    texture.imageType = VK_IMAGE_TYPE_2D;
-    texture.imageViewType = VK_IMAGE_VIEW_TYPE_2D;
-    texture.format = VK_FORMAT_R16G16_UINT;
-    texture.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
-    texture.usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
-    texture.usageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  case IDUNN_GPU_TEXTURE_USAGE_COLOR_TEXT_BANDS:
+    imageType = VK_IMAGE_TYPE_2D;
+    imageViewType = VK_IMAGE_VIEW_TYPE_2D;
+    format = VK_FORMAT_R16G16_UINT;
+    aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+    usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    usageFlags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     break;
   }
 
   VkImageCreateInfo imageCreateInfo = {};
   imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageCreateInfo.flags = 0;
-  imageCreateInfo.imageType = texture.imageType;
-  imageCreateInfo.format = texture.format;
+  imageCreateInfo.imageType = imageType;
+  imageCreateInfo.format = format;
   imageCreateInfo.extent = extent;
-  imageCreateInfo.mipLevels = texture.levelCount;
-  imageCreateInfo.arrayLayers = texture.layerCount;
+  imageCreateInfo.mipLevels = levelCount;
+  imageCreateInfo.arrayLayers = layerCount;
   imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
   imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-  imageCreateInfo.usage = texture.usageFlags;
+  imageCreateInfo.usage = usageFlags;
   imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   imageCreateInfo.queueFamilyIndexCount = 0;
   imageCreateInfo.pQueueFamilyIndices = nullptr;
-  imageCreateInfo.initialLayout = texture.layout;
+  imageCreateInfo.initialLayout = layout;
 
   VmaAllocationCreateInfo allocationCreateInfo = {};
   allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
 
   VK_CHECK(vmaCreateImage(
-      allocator,
+      gpu->allocator,
       &imageCreateInfo,
       &allocationCreateInfo,
-      &texture.image,
-      &texture.allocation,
-      &texture.allocationInfo));
+      &image,
+      &allocation,
+      &allocationInfo));
 
-  LOG_ERROR("texture.memoryFlags: %i", texture.memoryFlags);
-  vmaGetAllocationMemoryProperties(allocator, texture.allocation, &texture.memoryFlags);
+  LOG_ERROR("texture.memoryFlags: %i", memoryFlags);
+  vmaGetAllocationMemoryProperties(gpu->allocator, allocation, &memoryFlags);
 
-  LOG_ERROR("texture.memoryFlags: %i", texture.memoryFlags);
+  LOG_ERROR("texture.memoryFlags: %i", memoryFlags);
 
   VkComponentMapping componentMapping = {};
   componentMapping.r = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1363,52 +1365,48 @@ auto Gpu::create(Texture::Desc &description) -> Handle<Texture> {
   componentMapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
   VkImageSubresourceRange imageSubresourceRange = {};
-  imageSubresourceRange.aspectMask = texture.aspectFlags;
+  imageSubresourceRange.aspectMask = aspectFlags;
   imageSubresourceRange.baseMipLevel = 0;
-  imageSubresourceRange.levelCount = texture.levelCount;
+  imageSubresourceRange.levelCount = levelCount;
   imageSubresourceRange.baseArrayLayer = 0;
-  imageSubresourceRange.layerCount = texture.layerCount;
+  imageSubresourceRange.layerCount = layerCount;
 
   VkImageViewCreateInfo imageViewInfo = {};
   imageViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  imageViewInfo.image = texture.image;
-  imageViewInfo.viewType = texture.imageViewType;
-  imageViewInfo.format = texture.format;
+  imageViewInfo.image = image;
+  imageViewInfo.viewType = imageViewType;
+  imageViewInfo.format = format;
   imageViewInfo.components = componentMapping;
   imageViewInfo.subresourceRange = imageSubresourceRange;
 
-  VK_CHECK(vkCreateImageView(device, &imageViewInfo, allocationCallbacks, &texture.imageView));
+  VK_CHECK(vkCreateImageView(gpu->device, &imageViewInfo, gpu->allocationCallbacks, &imageView));
 
 #ifndef NDEBUG
-  std::string imageName = std::format("{} (Image)", description.debugName);
-  std::string imageViewName = std::format("{} (Image View)", description.debugName);
-  VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
-  debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-  debugUtilsObjectNameInfoEXT.pObjectName = imageName.c_str();
-  debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE;
-  debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)texture.image;
-  VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
-  debugUtilsObjectNameInfoEXT.pObjectName = imageViewName.c_str();
-  debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
-  debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)texture.imageView;
-  VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+  // std::string imageName = std::format("{} (Image)", config->debugName);
+  // std::string imageViewName = std::format("{} (Image View)", config->debugName);
+  // VkDebugUtilsObjectNameInfoEXT debugUtilsObjectNameInfoEXT = {};
+  // debugUtilsObjectNameInfoEXT.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+  // debugUtilsObjectNameInfoEXT.pObjectName = imageName.c_str();
+  // debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE;
+  // debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)image;
+  // VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
+  // debugUtilsObjectNameInfoEXT.pObjectName = imageViewName.c_str();
+  // debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
+  // debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)imageView;
+  // VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 #endif
 
-  descriptorSync |= DescriptorSync::SampledImage;
-
-  return textures.allocate(nullptr, texture);
+  gpu->descriptorSync |= DescriptorSync::SampledImage;
 }
 
-auto Gpu::write(Handle<Texture> handle, VkCommandBuffer commandBuffer, const Texture::Write &writeInfo) -> void {
-  Texture &texture = *textures.get(handle);
-
-  if ((texture.memoryFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0U) {
+auto Gpu::Texture::write(VkCommandBuffer commandBuffer, idunn_gpu_texture_write_info *writeInfo) -> void {
+  if ((memoryFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0U) {
     assert(false && "TODO: write texture allocated in host visible memory");
   }
 
   VkBufferCreateInfo stagingBufferCreateInfo = {};
   stagingBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  stagingBufferCreateInfo.size = writeInfo.dataSize;
+  stagingBufferCreateInfo.size = writeInfo->dataSize;
   stagingBufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
   VmaAllocationCreateInfo stagingAllocationCreateInfo = {};
@@ -1421,14 +1419,14 @@ auto Gpu::write(Handle<Texture> handle, VkCommandBuffer commandBuffer, const Tex
   VmaAllocationInfo stagingAllocationInfo = {};
 
   VK_CHECK(vmaCreateBuffer(
-      allocator,
+      gpu->allocator,
       &stagingBufferCreateInfo,
       &stagingAllocationCreateInfo,
       &stagingBuffer,
       &stagingAllocation,
       &stagingAllocationInfo));
 
-  VK_CHECK(vmaCopyMemoryToAllocation(allocator, writeInfo.data, stagingAllocation, 0, stagingBufferCreateInfo.size));
+  VK_CHECK(vmaCopyMemoryToAllocation(gpu->allocator, writeInfo->data, stagingAllocation, 0, stagingBufferCreateInfo.size));
 
   VkBufferMemoryBarrier bufferMemoryBarrier = {};
   bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -1444,16 +1442,16 @@ auto Gpu::write(Handle<Texture> handle, VkCommandBuffer commandBuffer, const Tex
   imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
   imageMemoryBarrier.srcAccessMask = 0;
   imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  imageMemoryBarrier.oldLayout = texture.layout;
+  imageMemoryBarrier.oldLayout = layout;
   imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  imageMemoryBarrier.image = texture.image;
-  imageMemoryBarrier.subresourceRange.aspectMask = texture.aspectFlags;
+  imageMemoryBarrier.image = image;
+  imageMemoryBarrier.subresourceRange.aspectMask = aspectFlags;
   imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
-  imageMemoryBarrier.subresourceRange.levelCount = texture.levelCount;
+  imageMemoryBarrier.subresourceRange.levelCount = levelCount;
   imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
-  imageMemoryBarrier.subresourceRange.layerCount = texture.layerCount;
+  imageMemoryBarrier.subresourceRange.layerCount = layerCount;
 
   vkCmdPipelineBarrier(
       commandBuffer,
@@ -1467,33 +1465,32 @@ auto Gpu::write(Handle<Texture> handle, VkCommandBuffer commandBuffer, const Tex
       1,
       &imageMemoryBarrier);
 
-  VkBufferImageCopy bufferImageCopy[writeInfo.regions.size()];
-
-  for (uint32_t i = 0; i < writeInfo.regions.size(); i++) {
-    const Texture::Region &region = writeInfo.regions[i];
+  std::vector<VkBufferImageCopy> bufferImageCopy(writeInfo->regionsSize);
+  for (uint32_t i = 0; i < writeInfo->regionsSize; i++) {
+    idunn_gpu_texture_region *region = &writeInfo->regions[i];
     bufferImageCopy[i] = (VkBufferImageCopy){};
     bufferImageCopy[i].bufferOffset = 0;
     bufferImageCopy[i].bufferRowLength = 0;
     bufferImageCopy[i].bufferImageHeight = 0;
-    bufferImageCopy[i].imageSubresource.aspectMask = texture.aspectFlags;
-    bufferImageCopy[i].imageSubresource.layerCount = texture.layerCount;
+    bufferImageCopy[i].imageSubresource.aspectMask = aspectFlags;
+    bufferImageCopy[i].imageSubresource.layerCount = layerCount;
     bufferImageCopy[i].imageSubresource.mipLevel = 0;
     bufferImageCopy[i].imageSubresource.baseArrayLayer = 0;
-    bufferImageCopy[i].imageExtent.width = region.width;
-    bufferImageCopy[i].imageExtent.height = region.height;
-    bufferImageCopy[i].imageExtent.depth = region.depth;
-    bufferImageCopy[i].imageOffset.x = region.offsetX;
-    bufferImageCopy[i].imageOffset.y = region.offsetY;
-    bufferImageCopy[i].imageOffset.z = region.offsetZ;
+    bufferImageCopy[i].imageExtent.width = region->width;
+    bufferImageCopy[i].imageExtent.height = region->height;
+    bufferImageCopy[i].imageExtent.depth = region->depth;
+    bufferImageCopy[i].imageOffset.x = region->offsetX;
+    bufferImageCopy[i].imageOffset.y = region->offsetY;
+    bufferImageCopy[i].imageOffset.z = region->offsetZ;
   }
 
   vkCmdCopyBufferToImage(
       commandBuffer,
       stagingBuffer,
-      texture.image,
+      image,
       imageMemoryBarrier.newLayout,
-      writeInfo.regions.size(),
-      bufferImageCopy);
+      bufferImageCopy.size(),
+      bufferImageCopy.data());
 
   imageMemoryBarrier.oldLayout = imageMemoryBarrier.newLayout;
   imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1512,76 +1509,18 @@ auto Gpu::write(Handle<Texture> handle, VkCommandBuffer commandBuffer, const Tex
       1,
       &imageMemoryBarrier);
 
-  descriptorSync |= DescriptorSync::SampledImage;
+  gpu->descriptorSync |= DescriptorSync::SampledImage;
 
-  defer(std::packaged_task<void()>([&, vkBuffer = stagingBuffer, vkAllocation = stagingAllocation]() -> void {
+  gpu->defer(std::packaged_task<void()>([allocator = gpu->allocator, vkBuffer = stagingBuffer, vkAllocation = stagingAllocation]() -> void {
     vmaDestroyBuffer(allocator, vkBuffer, vkAllocation);
   }));
 }
 
-auto Gpu::destroy(Handle<Texture> texture) -> void {
-  textures.free(texture);
-}
-
-auto Gpu::destroy(Texture &texture) -> void {
-  defer(std::packaged_task<void()>([&, vkImage = texture.image, vkImageView = texture.imageView, vkAllocation = texture.allocation]() -> void {
+Gpu::Texture::~Texture() {
+  gpu->defer(std::packaged_task<void()>([allocator = gpu->allocator, device = gpu->device, allocationCallbacks = gpu->allocationCallbacks, vkImage = image, vkImageView = imageView, vkAllocation = allocation]() -> void {
     vkDestroyImageView(device, vkImageView, allocationCallbacks);
     vmaDestroyImage(allocator, vkImage, vkAllocation);
   }));
-}
-
-auto Gpu::create(World::Desc *description) -> Handle<World> {
-  World world = {};
-  world.vertexSize = description->vertexSize;
-  world.indexSize = description->indexSize;
-  world.vertexCount = 0;
-  world.indexCount = 0;
-  world.transformData = description->transformData;
-  world.currentTransformData = *world.transformData;
-
-  Buffer::Desc vertexBufferDesc = {};
-  vertexBufferDesc.usage = Buffer::Usage::Vertex;
-
-  Buffer::Desc indexBufferDesc = {};
-  indexBufferDesc.usage = Buffer::Usage::Index;
-
-  Buffer::Desc indirectBufferDesc = {};
-  indirectBufferDesc.usage = Buffer::Usage::Indirect;
-
-  Buffer::Desc transformBufferDesc = {};
-  transformBufferDesc.usage = Buffer::Usage::Storage;
-
-  Buffer::Desc drawBufferDesc = {};
-  drawBufferDesc.usage = Buffer::Usage::Storage;
-
-  Pipeline::Desc pipelineDesc = {};
-  pipelineDesc.shader = "basic";
-  pipelineDesc.colorAttachmentFormat = VK_FORMAT_B8G8R8A8_SRGB;
-  pipelineDesc.windingOrder = Pipeline::WindingOrder::CounterClockwise;
-
-#ifndef NDEBUG
-  vertexBufferDesc.debugName = "Vertex Buffer";
-  indexBufferDesc.debugName = "Index Buffer";
-  indirectBufferDesc.debugName = "Indirect Buffer";
-  transformBufferDesc.debugName = "Transform Buffer";
-  drawBufferDesc.debugName = "Draw Buffer";
-  pipelineDesc.debugName = "Pipeline";
-#endif
-
-  world.vertexBuffer = create(vertexBufferDesc);
-  world.indexBuffer = create(indexBufferDesc);
-  world.indirectBuffer = create(indirectBufferDesc);
-  world.transformBuffer = create(transformBufferDesc);
-  world.drawBuffer = create(drawBufferDesc);
-  world.pipeline = create(pipelineDesc);
-
-  return worlds.allocate(nullptr, world);
-}
-
-auto Gpu::destroy(Handle<World> world) -> void {
-}
-
-auto Gpu::destroy(World &world) -> void {
 }
 
 // auto Gpu::syncVertexBuffer(World *world, VkCommandBuffer commandBuffer) -> void {
@@ -1693,34 +1632,31 @@ auto Gpu::destroy(World &world) -> void {
 //   });
 // }
 
-auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::mat4 projection, uint32_t width, uint32_t height, float clearColor) -> void {
-  Surface &surface = *surfaces.get(surfaceHandle);
-  World *world = worlds.get(worldHandle);
-
-  if (width != surface.extent.width || height != surface.extent.height) {
-    initSwapchain(surface, width, height);
+auto Gpu::Surface::render(idunn_gpu_render_info *renderInfo, uint32_t width, uint32_t height, float clearColor) -> void {
+  if (width != extent.width || height != extent.height) {
+    initSwapchain(width, height);
   }
 
-  const VkFence fence = frameFences[frameNumber % frameFences.size()];
+  const VkFence fence = gpu->frameFences[gpu->frameNumber % gpu->frameFences.size()];
   assert(fence != VK_NULL_HANDLE);
 
-  while (vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_TIMEOUT) {
+  while (vkWaitForFences(gpu->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_TIMEOUT) {
     ;
   }
-  VK_CHECK(vkResetFences(device, 1, &fence));
+  VK_CHECK(vkResetFences(gpu->device, 1, &fence));
 
-  VkSemaphore imageReadyForRender = surface.readyForRender[frameNumber % surface.readyForRender.size()];
+  VkSemaphore imageReadyForRender = readyForRender[gpu->frameNumber % readyForRender.size()];
 
   uint32_t swapchainImageIndex = {};
-  VkResult acquireResult = vkAcquireNextImageKHR(device, surface.swapchain, UINT64_MAX, imageReadyForRender, VK_NULL_HANDLE, &swapchainImageIndex);
-  VkSemaphore imageReadyForPresent = surface.readyForPresent[swapchainImageIndex];
+  VkResult acquireResult = vkAcquireNextImageKHR(gpu->device, swapchain, UINT64_MAX, imageReadyForRender, VK_NULL_HANDLE, &swapchainImageIndex);
+  VkSemaphore imageReadyForPresent = readyForPresent[swapchainImageIndex];
 
   VkCommandBufferBeginInfo commandBufferBeginInfo = {};
   commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   commandBufferBeginInfo.pInheritanceInfo = nullptr;
 
-  VkCommandBuffer commandBuffer = frameCommandBuffers[frameNumber % frameCommandBuffers.size()];
+  VkCommandBuffer commandBuffer = gpu->frameCommandBuffers[gpu->frameNumber % gpu->frameCommandBuffers.size()];
   assert(commandBuffer != VK_NULL_HANDLE);
 
   VK_CHECK(vkResetCommandBuffer(commandBuffer, 0));
@@ -1736,7 +1672,7 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   imageMemoryBarrier2.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   imageMemoryBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   imageMemoryBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  imageMemoryBarrier2.image = surface.images[swapchainImageIndex];
+  imageMemoryBarrier2.image = images[swapchainImageIndex];
   imageMemoryBarrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   imageMemoryBarrier2.subresourceRange.baseMipLevel = 0;
   imageMemoryBarrier2.subresourceRange.levelCount = 1;
@@ -1754,7 +1690,7 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
 
   VkRenderingAttachmentInfo renderingAttachmentInfo = {};
   renderingAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-  renderingAttachmentInfo.imageView = surface.imageViews[swapchainImageIndex];
+  renderingAttachmentInfo.imageView = imageViews[swapchainImageIndex];
   renderingAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   renderingAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   renderingAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1765,7 +1701,7 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   renderingInfo.layerCount = 1;
   renderingInfo.colorAttachmentCount = 1;
   renderingInfo.pColorAttachments = &renderingAttachmentInfo;
-  renderingInfo.renderArea.extent = surface.extent;
+  renderingInfo.renderArea.extent = extent;
   renderingInfo.renderArea.offset.x = 0;
   renderingInfo.renderArea.offset.y = 0;
 
@@ -1774,39 +1710,39 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   VkViewport viewport = {};
   viewport.x = 0;
   viewport.y = 0;
-  viewport.width = (float)surface.extent.width;
-  viewport.height = (float)surface.extent.height;
+  viewport.width = (float)extent.width;
+  viewport.height = (float)extent.height;
   viewport.minDepth = 0;
   viewport.maxDepth = 1;
   vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-  assert(surface.extent.width > 0);
+  assert(extent.width > 0);
 
   VkRect2D scissor = {};
-  scissor.extent = surface.extent;
+  scissor.extent = extent;
   scissor.offset.x = 0;
   scissor.offset.y = 0;
   vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-  Buffer *vertexBuffer = buffers.get(world->vertexBuffer);
-  Buffer *indexBuffer = buffers.get(world->indexBuffer);
-  Buffer *indirectBuffer = buffers.get(world->indirectBuffer);
-  Buffer *drawBuffer = buffers.get(world->drawBuffer);
-  Buffer *transformBuffer = buffers.get(world->transformBuffer);
-  Pipeline *pipeline = pipelines.get(world->pipeline);
+  auto *vertexBuffer = static_cast<Buffer *>(renderInfo->vertexBuffer);
+  auto *indexBuffer = static_cast<Buffer *>(renderInfo->indexBuffer);
+  auto *indirectBuffer = static_cast<Buffer *>(renderInfo->indirectBuffer);
+  auto *instanceBuffer = static_cast<Buffer *>(renderInfo->instanceBuffer);
+  auto *transformBuffer = static_cast<Buffer *>(renderInfo->transformBuffer);
+  auto *pipeline = static_cast<Pipeline *>(renderInfo->pipeline);
 
-  World::PushConstants pushConstants = {};
-  pushConstants.drawBuffer = drawBuffer->address;
+  PushConstants pushConstants = {};
+  pushConstants.instanceBuffer = instanceBuffer->address;
   pushConstants.transformBuffer = transformBuffer->address;
   pushConstants.vertexBuffer = vertexBuffer->address;
-  pushConstants.proj = projection;
-  pushConstants.proj[1][1] *= -1;
+  std::memcpy(pushConstants.proj, renderInfo->projection, sizeof(float) * 16);
+  pushConstants.proj[5] *= -1;
 
-  // vkCmdBindIndexBuffer(commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
-  // vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+  vkCmdBindIndexBuffer(commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
   // vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &descriptorSet, 0, nullptr);
-  // vkCmdPushConstants(commandBuffer, pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(World::PushConstants), &pushConstants);
-  // vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer->buffer, 0, world->currentMeshCount, sizeof(VkDrawIndexedIndirectCommand));
+  vkCmdPushConstants(commandBuffer, pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushConstants);
+  vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer->buffer, 0, renderInfo->instanceCount, sizeof(VkDrawIndexedIndirectCommand));
 
   vkCmdEndRendering(commandBuffer);
 
@@ -1819,7 +1755,7 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   imageMemoryBarrier2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   imageMemoryBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   imageMemoryBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  imageMemoryBarrier2.image = surface.images[swapchainImageIndex];
+  imageMemoryBarrier2.image = images[swapchainImageIndex];
   imageMemoryBarrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   imageMemoryBarrier2.subresourceRange.baseMipLevel = 0;
   imageMemoryBarrier2.subresourceRange.levelCount = 1;
@@ -1844,21 +1780,21 @@ auto Gpu::render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::
   submitInfo.pSignalSemaphores = &imageReadyForPresent;
   std::array<VkPipelineStageFlags, 1> waitStages = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
   submitInfo.pWaitDstStageMask = waitStages.data();
-  VK_CHECK(vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence));
+  VK_CHECK(vkQueueSubmit(gpu->graphicsQueue, 1, &submitInfo, fence));
 
   VkPresentInfoKHR presentInfo = {};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
   presentInfo.waitSemaphoreCount = 1;
   presentInfo.pWaitSemaphores = &imageReadyForPresent;
   presentInfo.swapchainCount = 1;
-  presentInfo.pSwapchains = &surface.swapchain;
+  presentInfo.pSwapchains = &swapchain;
   presentInfo.pImageIndices = &swapchainImageIndex;
-  VK_CHECK(vkQueuePresentKHR(graphicsQueue, &presentInfo));
+  VK_CHECK(vkQueuePresentKHR(gpu->graphicsQueue, &presentInfo));
 
-  frameNumber++;
+  gpu->frameNumber++;
 }
 
-auto Gpu::submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordCommands) const -> void {
+auto Gpu::acquireCommandBuffer() -> VkCommandBuffer {
   VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
   VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
@@ -1874,8 +1810,10 @@ auto Gpu::submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordComm
   commandBufferBeginInfo.pInheritanceInfo = nullptr;
   VK_CHECK(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo));
 
-  recordCommands(commandBuffer);
+  return commandBuffer;
+}
 
+auto Gpu::submitCommandBuffer(VkCommandBuffer commandBuffer) -> void {
   VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
   VkCommandBufferSubmitInfo commandBufferSubmitInfo = {};
@@ -1891,45 +1829,45 @@ auto Gpu::submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordComm
   vkDeviceWaitIdle(device);
 }
 
-auto Gpu::create(Surface::Desc &description) -> Handle<Surface> {
+auto Gpu::submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordCommands) -> void {
+  VkCommandBuffer commandBuffer = acquireCommandBuffer();
+  recordCommands(commandBuffer);
+  submitCommandBuffer(commandBuffer);
+}
+
+Gpu::Surface::Surface(Gpu *gpu, idunn_gpu_surface_config *config) : gpu(gpu) {
   LOG_DEBUG("Surface");
-  Surface surface = {};
-  bool surfaceOk = SDL_Vulkan_CreateSurface(description.window, instance, allocationCallbacks, &surface.surface);
+  bool surfaceOk = SDL_Vulkan_CreateSurface(static_cast<SDL_Window *>(config->window), gpu->instance, gpu->allocationCallbacks, &surface);
   assert(surfaceOk && "SDL failed creating surface");
-  assert(surface.surface != VK_NULL_HANDLE);
-  initSwapchain(surface, description.width, description.height);
-  return surfaces.allocate(nullptr, surface);
+  assert(surface != VK_NULL_HANDLE);
+  initSwapchain(config->width, config->height);
 }
 
-auto Gpu::destroy(Handle<Surface> surface) -> void {
-  surfaces.free(surface);
-}
-
-auto Gpu::destroy(Surface &surface) -> void {
-  vkDeviceWaitIdle(device);
-  cleanupSwapchainResources(surface);
-  vkDestroySwapchainKHR(device, surface.swapchain, allocationCallbacks);
-  vkDestroySurfaceKHR(instance, surface.surface, allocationCallbacks);
+Gpu::Surface::~Surface() {
+  vkDeviceWaitIdle(gpu->device);
+  cleanupSwapchainResources();
+  vkDestroySwapchainKHR(gpu->device, swapchain, gpu->allocationCallbacks);
+  vkDestroySurfaceKHR(gpu->instance, surface, gpu->allocationCallbacks);
   LOG_DEBUG("~Surface");
 }
 
-auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> void {
-  if (surface.swapchain != VK_NULL_HANDLE) {
-    cleanupSwapchainResources(surface);
+auto Gpu::Surface::initSwapchain(uint32_t width, uint32_t height) -> void {
+  if (swapchain != VK_NULL_HANDLE) {
+    cleanupSwapchainResources();
   }
 
   VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
-  VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface.surface, &surfaceCapabilities));
+  VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu->physicalDevice, surface, &surfaceCapabilities));
 
   uint32_t surfaceFormatCount = 0;
-  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface.surface, &surfaceFormatCount, nullptr));
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(gpu->physicalDevice, surface, &surfaceFormatCount, nullptr));
   std::vector<VkSurfaceFormatKHR> availableSurfaceFormats(surfaceFormatCount);
-  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface.surface, &surfaceFormatCount, availableSurfaceFormats.data()));
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(gpu->physicalDevice, surface, &surfaceFormatCount, availableSurfaceFormats.data()));
 
-  surface.format = availableSurfaceFormats[0];
+  format = availableSurfaceFormats[0];
   for (uint32_t i = 0; i < surfaceFormatCount; i++) {
     if (availableSurfaceFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB && availableSurfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-      surface.format = availableSurfaceFormats[i];
+      format = availableSurfaceFormats[i];
       break;
     }
   }
@@ -1947,8 +1885,8 @@ auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> vo
   //   }
   // }
 
-  surface.extent.width = std::max(std::min(width, surfaceCapabilities.maxImageExtent.width), surfaceCapabilities.minImageExtent.width);
-  surface.extent.height = std::max(std::min(height, surfaceCapabilities.maxImageExtent.height), surfaceCapabilities.minImageExtent.height);
+  extent.width = std::max(std::min(width, surfaceCapabilities.maxImageExtent.width), surfaceCapabilities.minImageExtent.width);
+  extent.height = std::max(std::min(height, surfaceCapabilities.maxImageExtent.height), surfaceCapabilities.minImageExtent.height);
 
   uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
   if (surfaceCapabilities.maxImageCount > 0 && imageCount > surfaceCapabilities.maxImageCount) {
@@ -1957,11 +1895,11 @@ auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> vo
 
   VkSwapchainCreateInfoKHR swapchainCreateInfo = {};
   swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-  swapchainCreateInfo.surface = surface.surface;
+  swapchainCreateInfo.surface = surface;
   swapchainCreateInfo.minImageCount = imageCount;
-  swapchainCreateInfo.imageFormat = surface.format.format;
-  swapchainCreateInfo.imageColorSpace = surface.format.colorSpace;
-  swapchainCreateInfo.imageExtent = surface.extent;
+  swapchainCreateInfo.imageFormat = format.format;
+  swapchainCreateInfo.imageColorSpace = format.colorSpace;
+  swapchainCreateInfo.imageExtent = extent;
   swapchainCreateInfo.imageArrayLayers = 1;
   swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -1969,26 +1907,26 @@ auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> vo
   swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   swapchainCreateInfo.presentMode = presentMode;
   swapchainCreateInfo.clipped = VK_TRUE;
-  swapchainCreateInfo.oldSwapchain = surface.swapchain;
+  swapchainCreateInfo.oldSwapchain = swapchain;
 
   VkSemaphoreCreateInfo semaphoreCreateInfo = {};
   semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-  VK_CHECK(vkCreateSwapchainKHR(device, &swapchainCreateInfo, allocationCallbacks, &surface.swapchain));
-  assert(surface.swapchain != VK_NULL_HANDLE);
+  VK_CHECK(vkCreateSwapchainKHR(gpu->device, &swapchainCreateInfo, gpu->allocationCallbacks, &swapchain));
+  assert(swapchain != VK_NULL_HANDLE);
 
   uint32_t swapchainImageCount = 0;
-  VK_CHECK(vkGetSwapchainImagesKHR(device, surface.swapchain, &swapchainImageCount, nullptr));
-  surface.images.resize(swapchainImageCount);
-  surface.imageViews.resize(swapchainImageCount);
-  surface.readyForRender.resize(swapchainImageCount);
-  surface.readyForPresent.resize(swapchainImageCount);
-  VK_CHECK(vkGetSwapchainImagesKHR(device, surface.swapchain, &swapchainImageCount, surface.images.data()));
+  VK_CHECK(vkGetSwapchainImagesKHR(gpu->device, swapchain, &swapchainImageCount, nullptr));
+  images.resize(swapchainImageCount);
+  imageViews.resize(swapchainImageCount);
+  readyForRender.resize(swapchainImageCount);
+  readyForPresent.resize(swapchainImageCount);
+  VK_CHECK(vkGetSwapchainImagesKHR(gpu->device, swapchain, &swapchainImageCount, images.data()));
 
   VkImageViewCreateInfo imageViewCreateInfo = {};
   imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  imageViewCreateInfo.format = surface.format.format;
+  imageViewCreateInfo.format = format.format;
   imageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
   imageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
   imageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1999,11 +1937,11 @@ auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> vo
   imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
   imageViewCreateInfo.subresourceRange.layerCount = 1;
 
-  for (uint32_t i = 0; i < surface.images.size(); i++) {
-    imageViewCreateInfo.image = surface.images[i];
-    VK_CHECK(vkCreateSemaphore(device, &semaphoreCreateInfo, allocationCallbacks, &surface.readyForRender[i]));
-    VK_CHECK(vkCreateSemaphore(device, &semaphoreCreateInfo, allocationCallbacks, &surface.readyForPresent[i]));
-    VK_CHECK(vkCreateImageView(device, &imageViewCreateInfo, allocationCallbacks, &surface.imageViews[i]));
+  for (uint32_t i = 0; i < images.size(); i++) {
+    imageViewCreateInfo.image = images[i];
+    VK_CHECK(vkCreateSemaphore(gpu->device, &semaphoreCreateInfo, gpu->allocationCallbacks, &readyForRender[i]));
+    VK_CHECK(vkCreateSemaphore(gpu->device, &semaphoreCreateInfo, gpu->allocationCallbacks, &readyForPresent[i]));
+    VK_CHECK(vkCreateImageView(gpu->device, &imageViewCreateInfo, gpu->allocationCallbacks, &imageViews[i]));
 #ifndef NDEBUG
     std::string imageName = std::format("Swapchain Image {}", i);
     std::string readyForRenderName = std::format("Swapchain Image {} Ready For Render Semaphore", i);
@@ -2015,31 +1953,31 @@ auto Gpu::initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> vo
 
     debugUtilsObjectNameInfoEXT.pObjectName = imageName.c_str();
     debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.images[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)images[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 
     debugUtilsObjectNameInfoEXT.pObjectName = imageViewName.c_str();
     debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.imageViews[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)imageViews[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 
     debugUtilsObjectNameInfoEXT.pObjectName = readyForRenderName.c_str();
     debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SEMAPHORE;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.readyForRender[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)readyForRender[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 
     debugUtilsObjectNameInfoEXT.pObjectName = readyForPresentName.c_str();
     debugUtilsObjectNameInfoEXT.objectType = VK_OBJECT_TYPE_SEMAPHORE;
-    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)surface.readyForPresent[i];
-    VK_CHECK(vkSetDebugUtilsObjectNameEXT(device, &debugUtilsObjectNameInfoEXT));
+    debugUtilsObjectNameInfoEXT.objectHandle = (uint64_t)readyForPresent[i];
+    VK_CHECK(vkSetDebugUtilsObjectNameEXT(gpu->device, &debugUtilsObjectNameInfoEXT));
 #endif
   }
 }
 
-auto Gpu::cleanupSwapchainResources(Surface &surface) -> void {
-  for (uint32_t i = 0; i < surface.images.size(); i++) {
-    vkDestroyImageView(device, surface.imageViews[i], allocationCallbacks);
-    vkDestroySemaphore(device, surface.readyForRender[i], allocationCallbacks);
-    vkDestroySemaphore(device, surface.readyForPresent[i], allocationCallbacks);
+auto Gpu::Surface::cleanupSwapchainResources() -> void {
+  for (uint32_t i = 0; i < images.size(); i++) {
+    vkDestroyImageView(gpu->device, imageViews[i], gpu->allocationCallbacks);
+    vkDestroySemaphore(gpu->device, readyForRender[i], gpu->allocationCallbacks);
+    vkDestroySemaphore(gpu->device, readyForPresent[i], gpu->allocationCallbacks);
   }
 }

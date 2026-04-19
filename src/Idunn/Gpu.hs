@@ -18,13 +18,15 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Idunn.Gpu
-  ( Gpu (..),
+  ( Gpu,
     HasGpu (..),
     initGpu,
+    Surface,
+    initSurface,
     Graphics (..),
     HasGraphics (..),
     initGraphics,
-    Mesh,
+    Mesh (..),
     prepareRender,
     render,
   )
@@ -60,6 +62,8 @@ import UnliftIO.Resource
 
 newtype Gpu = Gpu {ptr :: Ptr Void}
 
+newtype Command s = Command {ptr :: Ptr Void}
+
 class HasGpu env where
   getGpu :: env -> Gpu
 
@@ -74,8 +78,7 @@ newtype Sampler = Sampler {ptr :: Ptr Void}
 newtype Texture = Texture {ptr :: Ptr Void}
 
 initGpu :: (MonadResource m) => Text -> Word32 -> m Gpu
-initGpu appName appVersion = do
-  snd <$> allocate up down
+initGpu appName appVersion = snd <$> allocate up down
   where
     up =
       alloca $ \pGpu ->
@@ -91,6 +94,18 @@ initGpu appName appVersion = do
               idunn_gpu_init pConfig pGpu
               Gpu <$> peek pGpu
     down gpu = idunn_gpu_uninit gpu.ptr
+
+initSurface :: (MonadResource m) => Gpu -> Ptr Void -> Word32 -> Word32 -> m Surface
+initSurface gpu pWindow width height = snd <$> allocate up down
+  where
+    up =
+      alloca $ \pSurface ->
+        alloca $ \pConfig -> do
+          let config = Idunn_gpu_surface_config width height pWindow
+          poke pConfig config
+          idunn_gpu_surface_init gpu.ptr pConfig pSurface
+          Surface <$> peek pSurface
+    down surface = idunn_gpu_surface_uninit surface.ptr
 
 data MeshLocation = MeshLocation
   { indexOffset :: Word32,
@@ -127,13 +142,17 @@ prepareRender gpu graphics = do
                 { idunn_gpu_mesh_instance_transformIdx = fromIntegral transformIdx
                 }
 
-  drawsSize <- liftIO $ peek graphics.draws.size
-  drawBuffer <- readIORef graphics.draws.bufferRef
-  writeBuffer gpu graphics.indirectBuffer (getRawPtr drawBuffer) (fromIntegral drawsSize) False
-
-  instancesSize <- liftIO $ peek graphics.meshInstances.size
-  instanceBuffer <- readIORef graphics.meshInstances.bufferRef
-  writeBuffer gpu graphics.instanceBuffer (getRawPtr drawBuffer) (fromIntegral instancesSize) False
+  liftIO $ submitCommands gpu $ \command -> do
+    drawsSize <- liftIO $ peek graphics.draws.size
+    drawBuffer <- readIORef graphics.draws.bufferRef
+    putStrLn "draws size:"
+    print drawsSize
+    writeBuffer graphics.indirectBuffer command (getRawPtr drawBuffer) (fromIntegral drawsSize) False
+    instancesSize <- liftIO $ peek graphics.meshInstances.size
+    instanceBuffer <- readIORef graphics.meshInstances.bufferRef
+    putStrLn "instance size:"
+    print instancesSize
+    writeBuffer graphics.instanceBuffer command (getRawPtr instanceBuffer) (fromIntegral instancesSize) False
 
 class HasGraphics vertex env where
   getGraphics :: env -> Graphics vertex
@@ -149,8 +168,23 @@ data Graphics (vertex :: Type) = Graphics
     loadedMeshes :: IORef (Map.Map (Mesh vertex) MeshLocation),
     meshReferences :: IORef (Map.Map (Mesh vertex) IntSet),
     draws :: PinnedVector' Idunn_gpu_draw,
-    meshInstances :: PinnedVector' Idunn_gpu_mesh_instance
+    meshInstances :: PinnedVector' Idunn_gpu_mesh_instance,
+    mainPipeline :: Pipeline
   }
+
+-- #ifndef NDEBUG
+--   vertexBufferDesc.debugName = "Vertex Buffer";
+--   indexBufferDesc.debugName = "Index Buffer";
+--   indirectBufferDesc.debugName = "Indirect Buffer";
+--   transformBufferDesc.debugName = "Transform Buffer";
+--   drawBufferDesc.debugName = "Draw Buffer";
+--   pipelineDesc.debugName = "Pipeline";
+-- #endif
+
+-- Pipeline::Desc pipelineDesc = {};
+-- pipelineDesc.shader = "basic";
+-- pipelineDesc.colorAttachmentFormat = VK_FORMAT_B8G8R8A8_SRGB;
+-- pipelineDesc.windingOrder = Pipeline::WindingOrder::CounterClockwise;
 
 initGraphics :: (MonadResource m) => Gpu -> m (Graphics vertex)
 initGraphics gpu = do
@@ -161,6 +195,7 @@ initGraphics gpu = do
   indirectBuffer <- initBuffer gpu 1024 IDUNN_GPU_BUFFER_USAGE_INDIRECT
   instanceBuffer <- initBuffer gpu 1024 IDUNN_GPU_BUFFER_USAGE_STORAGE
   transformBuffer <- initBuffer gpu 1024 IDUNN_GPU_BUFFER_USAGE_STORAGE
+  mainPipeline <- initPipeline gpu IDUNN_GPU_PIPELINE_WINDING_ORDER_CLOCKWISE
   loadedMeshes <- newIORef mempty
   meshReferences <- newIORef mempty
   draws <- newPinned 10
@@ -176,12 +211,13 @@ initGraphics gpu = do
         transformBuffer = transformBuffer,
         loadedMeshes = loadedMeshes,
         meshReferences = meshReferences,
+        mainPipeline = mainPipeline,
         draws = draws,
         meshInstances = meshInstances
       }
 
-render :: (MonadIO m) => Gpu -> Surface -> Graphics vertex -> Mat4x4 -> Word32 -> Word32 -> m ()
-render gpu surface graphics projection width height = liftIO $ do
+render :: (MonadIO m) => Surface -> Graphics vertex -> Mat4x4 -> Word32 -> Word32 -> m ()
+render surface graphics projection width height = liftIO $ do
   alloca $ \pInfo -> do
     poke pInfo $
       Idunn_gpu_render_info
@@ -190,9 +226,11 @@ render gpu surface graphics projection width height = liftIO $ do
           idunn_gpu_render_info_indirectBuffer = graphics.indirectBuffer.ptr,
           idunn_gpu_render_info_transformBuffer = graphics.transformBuffer.ptr,
           idunn_gpu_render_info_instanceBuffer = graphics.instanceBuffer.ptr,
-          idunn_gpu_render_info_projection = toConstantArray projection
+          idunn_gpu_render_info_projection = toConstantArray projection,
+          idunn_gpu_render_info_pipeline = graphics.mainPipeline.ptr,
+          idunn_gpu_render_info_instanceCount = 0
         }
-    idunn_gpu_render gpu.ptr surface.ptr pInfo
+    idunn_gpu_surface_render surface.ptr pInfo
 
 uploadMesh :: (MonadUnliftIO m, Storable vertex) => Gpu -> Graphics vertex -> Mesh vertex -> m ()
 uploadMesh gpu graphics meshDescription = do
@@ -213,17 +251,29 @@ uploadMesh gpu graphics meshDescription = do
       writeIORef graphics.indexCount $ indexOffset + meshLocation.indexCount
       writeIORef graphics.vertexCount $ vertexOffset + meshLocation.vertexCount
       writeIORef graphics.loadedMeshes $ Map.insert meshDescription meshLocation loadedMeshes
+
       withRunInIO $ \runInIO -> do
-        VS.unsafeWith indices $ \pIndices -> runInIO $ writeBuffer gpu graphics.indexBuffer pIndices meshLocation.indexCount True
-        VS.unsafeWith vertices $ \pVertices -> runInIO $ writeBuffer gpu graphics.vertexBuffer pVertices meshLocation.vertexCount True
+        submitCommands gpu $ \command -> do
+          VS.unsafeWith indices $ \pIndices -> runInIO $ writeBuffer graphics.indexBuffer command pIndices meshLocation.indexCount True
+          VS.unsafeWith vertices $ \pVertices -> runInIO $ writeBuffer graphics.vertexBuffer command pVertices meshLocation.vertexCount True
 
 resolveMeshData :: (MonadIO m) => Mesh vertex -> m (VS.Vector Word32, VS.Vector vertex)
 resolveMeshData meshDescription = error "todo: resolveMeshData"
 
+submitCommands :: (MonadUnliftIO m) => Gpu -> (forall s. Command s -> m a) -> m a
+submitCommands gpu f = do
+  withRunInIO $ \runInIO -> do
+    liftIO $ alloca $ \pCommand -> runInIO $ do
+      liftIO $ idunn_gpu_command_init gpu.ptr pCommand
+      command <- liftIO $ peek pCommand
+      result <- f $ Command command
+      liftIO $ idunn_gpu_command_submit gpu.ptr command
+      pure result
+
 initBuffer :: (MonadResource m) => Gpu -> Word64 -> Idunn_gpu_buffer_usage -> m (Buffer item)
 initBuffer gpu initialCapacity bufferUsage = snd <$> allocate up down
   where
-    down buffer = idunn_gpu_buffer_uninit gpu.ptr buffer.ptr
+    down buffer = idunn_gpu_buffer_uninit buffer.ptr
     up =
       alloca $ \pBuffer -> do
         alloca $ \pConfig -> do
@@ -231,11 +281,23 @@ initBuffer gpu initialCapacity bufferUsage = snd <$> allocate up down
           idunn_gpu_buffer_init gpu.ptr pConfig pBuffer
           Buffer <$> peek pBuffer
 
-writeBuffer :: (MonadIO m) => Gpu -> Buffer item -> Ptr item -> Word32 -> Bool -> m ()
-writeBuffer gpu buffer items itemCount doAppend = liftIO $ do
+writeBuffer :: (MonadIO m) => Buffer item -> Command s -> Ptr item -> Word32 -> Bool -> m ()
+writeBuffer buffer command items itemCount doAppend = liftIO $ do
   alloca $ \pInfo -> do
     poke pInfo $ Idunn_gpu_buffer_write_info (castPtr items) (fromIntegral itemCount) $ fromBool doAppend
-    idunn_gpu_buffer_write gpu.ptr buffer.ptr pInfo
+    idunn_gpu_buffer_write buffer.ptr command.ptr pInfo
+
+initPipeline :: (MonadResource m) => Gpu -> Idunn_gpu_pipeline_winding_order -> m Pipeline
+initPipeline gpu windingOrder = snd <$> allocate up down
+  where
+    down pipeline = idunn_gpu_pipeline_uninit pipeline.ptr
+    up =
+      withCString "basic" $ \c'shader ->
+        alloca $ \pPipeline ->
+          alloca $ \pConfig -> do
+            poke pConfig $ Idunn_gpu_pipeline_config windingOrder (ConstPtr c'shader)
+            idunn_gpu_pipeline_init gpu.ptr pConfig pPipeline
+            Pipeline <$> peek pPipeline
 
 data Mesh (vertex :: Type) = MeshBox Float
   deriving stock (Eq, Ord)

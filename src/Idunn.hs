@@ -42,7 +42,7 @@ module Idunn
     -- pattern Kinematic,
     -- Shape (defaultSettings),
     -- ShapeSettings (..),
-    Mesh,
+    Mesh (..),
     MonadWorld (..),
     -- spawnNode,
     RequestExit (..),
@@ -108,9 +108,14 @@ newtype AppT world vertex env t m a = AppT
       MonadSample t,
       MonadTrans,
       NotReady t,
+      -- PerformEvent t,
       PostBuild t,
       TriggerEvent t
     )
+
+-- instance MonadTrans (AppT world vertex env t) where
+--   lift :: (Monad m) => m a -> AppT world vertex env t m a
+--   lift = AppT . lift . lift
 
 instance (Monad m, Monad (Performable m), PerformEvent t m, Reflex t) => PerformEvent t (AppT world vertex env t m) where
   type Performable (AppT world vertex env t m) = SystemT world (Performable m)
@@ -142,7 +147,7 @@ data AppEnv world vertex env t = AppEnv
     graphics :: Graphics vertex,
     audio :: Audio,
     -- physics :: Physics,
-    state :: InternalState,
+    -- state :: InternalState,
     deltaTimeEvent :: Event t Float,
     scancodeSubscriptions :: Subscriptions t Scancode Bool,
     keySubscriptions :: Subscriptions t Key Bool,
@@ -198,10 +203,10 @@ instance (Adjustable t m) => Adjustable t (AppT world vertex env t m) where
   traverseDMapWithKeyWithAdjust f dm0 dm' = AppT $ traverseDMapWithKeyWithAdjust (\k v -> unAppT (f k v)) dm0 dm'
   traverseDMapWithKeyWithAdjustWithMove f dm0 dm' = AppT $ traverseDMapWithKeyWithAdjustWithMove (\k v -> unAppT (f k v)) dm0 dm'
 
-instance (MonadIO m) => MonadResource (AppT world vertex env t m) where
-  liftResourceT m = do
-    env <- AppT ask
-    liftIO $ runInternalState m env.state
+-- instance (MonadIO m) => MonadResource (AppT world vertex env t m) where
+--   liftResourceT m = do
+--     env <- AppT ask
+--     liftIO $ runInternalState m env.state
 
 runAppT :: AppT world vertex env t m a -> AppEnv world vertex env t -> m a
 runAppT (AppT app) env = runReaderT app env
@@ -236,7 +241,9 @@ type App world vertex env t m =
     MonadInput t m Key,
     MonadInput t m Scancode,
     -- MonadWorld Mat4x4 m,
-    -- Performable m ~ SystemT world m,
+    Performable m ~ SystemT world (Performable (PerformEventT t m)),
+    -- MonadReader env (Performable m),
+    -- HasGraphics vertex (Performable m),
     -- MonadAudio (Performable m),
     -- RequestExit (Performable m),
     MonadIO (Performable m)
@@ -259,19 +266,23 @@ run ::
   forall vertex world env t m.
   ( t ~ SpiderTimeline Reflex.Global,
     m ~ SpiderHost Reflex.Global,
-    Has world m (Mesh vertex),
-    Has world m WorldTransform,
-    Storable vertex
+    Has world (ReaderT (AppEnv world vertex env t) (ResourceT IO)) (Mesh vertex),
+    Has world (ReaderT (AppEnv world vertex env t) (ResourceT IO)) WorldTransform
+    -- Has world m (Mesh vertex)
   ) =>
-  ReaderT (InitEnv vertex) IO world -> AppSettings -> env -> AppM world vertex env t m () -> IO ()
+  ReaderT (InitEnv vertex) IO world ->
+  AppSettings ->
+  env ->
+  AppM world vertex env t m () ->
+  IO ()
 run mkWorld settings env game = runResourceT $ do
   platform <- initPlatform
   gpu <- initGpu settings.appName settings.appVersion
   graphics :: Graphics vertex <- initGraphics gpu
-  window <- initWindow platform gpu settings.appName 800 600
+  (window, windowPtr) <- initWindow platform settings.appName 800 600
+  (width, height) <- readIORef window.dimensions
+  surface <- initSurface gpu windowPtr width height
   audio <- initAudio
-
-  internalState <- getInternalState
 
   let initEnv =
         InitEnv
@@ -283,72 +294,81 @@ run mkWorld settings env game = runResourceT $ do
     world <- mkWorld
     pure world
 
-  liftIO $ runSpiderHost $ do
-    asyncEvents <- newChan
+  asyncEvents <- newChan
 
+  exitRequestedRef <- newIORef False
+  eventsRef <- newIORef mempty
+  keySubscriptions <- newIORef mempty
+  scancodeSubscriptions <- newIORef mempty
+
+  (fire, appEnv, trPostBuild, trDeltaTime) <- liftIO $ runSpiderHost $ do
     (ePostBuild, trPostBuild) <- newEventWithTriggerRef
     (eDeltaTime, trDeltaTime) <- newEventWithTriggerRef
 
-    exitRequestedRef <- newIORef False
-    eventsRef <- newIORef mempty
-    keySubscriptions <- newIORef mempty
-    scancodeSubscriptions <- newIORef mempty
+    let appEnv =
+          AppEnv
+            { platform = platform,
+              gpu = gpu,
+              graphics = graphics,
+              audio = audio,
+              world = world,
+              deltaTimeEvent = eDeltaTime,
+              keySubscriptions = keySubscriptions,
+              scancodeSubscriptions = scancodeSubscriptions,
+              exitRequestedRef = exitRequestedRef,
+              env = env
+            }
 
     (_, FireCommand fire) <-
       hostPerformEventT $
         flip runPostBuildT ePostBuild $
           flip runTriggerEventT asyncEvents $
-            runAppT game $
-              AppEnv
-                { platform = platform,
-                  gpu = gpu,
-                  graphics = graphics,
-                  audio = audio,
-                  world = world,
-                  state = internalState,
-                  deltaTimeEvent = eDeltaTime,
-                  keySubscriptions = keySubscriptions,
-                  scancodeSubscriptions = scancodeSubscriptions,
-                  exitRequestedRef = exitRequestedRef,
-                  env = env
-                }
+            runAppT game appEnv
 
-    asyncTrigger <- liftIO $ async $ fix $ \loop -> do
-      triggerRefs <- readChan asyncEvents
-      mes <- liftIO $ forM triggerRefs $ \(EventTriggerRef er :=> TriggerInvocation a _) -> do
-        me <- readIORef er
-        pure $ (\e -> e :=> Identity a) <$> me
-      void $ runSpiderHost $ fire (catMaybes mes) $ pure ()
-      forM_ triggerRefs $ \(_ :=> TriggerInvocation _ cb) -> cb
-      loop
+    pure (fire, appEnv, trPostBuild, trDeltaTime)
 
-    startTime <- liftIO $ getTime Monotonic
-    addEvent eventsRef trPostBuild ()
+  asyncTrigger <- liftIO $ async $ fix $ \loop -> do
+    triggerRefs <- readChan asyncEvents
+    mes <- liftIO $ forM triggerRefs $ \(EventTriggerRef er :=> TriggerInvocation a _) -> do
+      me <- readIORef er
+      pure $ (\e -> e :=> Identity a) <$> me
+    void $ runSpiderHost $ fire (catMaybes mes) $ pure ()
+    forM_ triggerRefs $ \(_ :=> TriggerInvocation _ cb) -> cb
+    loop
 
-    flip fix startTime $ \loop prevTime -> do
-      liftIO $ pumpEvents platform $ \case
-        PlatformEventKey key active -> do
-          subscriptions <- readIORef keySubscriptions
-          case Map.lookup key subscriptions of
-            Just triggers -> modifyIORef' eventsRef $ \events -> foldr (\eventTrigger -> (:) (eventTrigger :=> Identity active)) events triggers
-            Nothing -> pure ()
-        PlatformEventScancode scancode active -> do
-          subscriptions <- readIORef scancodeSubscriptions
-          case Map.lookup scancode subscriptions of
-            Just triggers -> modifyIORef' eventsRef $ \events -> foldr (\eventTrigger -> (:) (eventTrigger :=> Identity active)) events triggers
-            Nothing -> pure ()
-        PlatformEventQuit -> writeIORef exitRequestedRef True
-      exitRequested <- readIORef exitRequestedRef
-      unless exitRequested $ do
-        currentTime <- liftIO $ getTime Monotonic
-        let deltaTime :: Float = fromIntegral (toNanoSecs (diffTimeSpec currentTime prevTime)) / 1e9
-        addEvent eventsRef trDeltaTime deltaTime
-        pendingEvents <- readIORef eventsRef
-        writeIORef eventsRef mempty
-        void $ fire pendingEvents $ pure () -- gameplay systems run
-        runWith world $ prepareRender gpu graphics
-        -- render window graphicsWorld
-        loop currentTime
+  startTime <- liftIO $ getTime Monotonic
+  liftIO $ addEvent eventsRef trPostBuild ()
+
+  flip runReaderT appEnv $ runWith world $ flip fix startTime $ \loop prevTime -> do
+    liftIO $ pumpEvents platform $ \case
+      PlatformEventKey key active -> do
+        subscriptions <- readIORef keySubscriptions
+        case Map.lookup key subscriptions of
+          Just triggers -> modifyIORef' eventsRef $ \events -> foldr (\eventTrigger -> (:) (eventTrigger :=> Identity active)) events triggers
+          Nothing -> pure ()
+      PlatformEventScancode scancode active -> do
+        subscriptions <- readIORef scancodeSubscriptions
+        case Map.lookup scancode subscriptions of
+          Just triggers -> modifyIORef' eventsRef $ \events -> foldr (\eventTrigger -> (:) (eventTrigger :=> Identity active)) events triggers
+          Nothing -> pure ()
+      PlatformEventQuit -> writeIORef exitRequestedRef True
+    exitRequested <- readIORef exitRequestedRef
+    unless exitRequested $ do
+      currentTime <- liftIO $ getTime Monotonic
+      let deltaTime :: Float = fromIntegral (toNanoSecs (diffTimeSpec currentTime prevTime)) / 1e9
+      liftIO $ addEvent eventsRef trDeltaTime deltaTime
+      pendingEvents <- readIORef eventsRef
+      writeIORef eventsRef mempty
+      liftIO $ runSpiderHost $ void $ fire pendingEvents $ pure () -- gameplay systems run
+      prepareRender gpu graphics
+      render surface graphics identity width height
+      loop currentTime
+
+    -- auto Window::render(Handle<Gpu::World> world) -> void {
+    --   auto projection = glm::perspective(glm::radians(60.0F), static_cast<float>(width) / static_cast<float>(height), 0.1F, 10.0F);
+    --   projection *= glm::lookAt(glm::vec3(0.0F, 0.0F, 5.0F), glm::vec3(0.0F, 0.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+    --   gpu->render(surface, world, projection, width, height, 0);
+    -- }
 
     cancel asyncTrigger
   where

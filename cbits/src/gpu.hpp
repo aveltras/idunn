@@ -29,7 +29,6 @@
 #include <glm/mat4x4.hpp>
 
 #include "flags.hpp"
-#include "pool.hpp"
 
 struct Gpu {
 
@@ -43,34 +42,21 @@ struct Gpu {
   struct Buffer {
     friend Gpu;
 
-    enum class Usage : uint8_t {
-      Index = 0,
-      Vertex,
-      Indirect,
-      Storage,
-    };
-
-    struct Desc {
-      Usage usage;
-      size_t size;
-#ifndef NDEBUG
-      const char *debugName;
-#endif
-    };
-
-    struct Write {
-      void *data;
-      uint8_t size;
-    };
+    explicit Buffer(Gpu *gpu, idunn_gpu_buffer_config *config);
+    ~Buffer();
+    auto resize(size_t capacity) -> void;
+    auto write(VkCommandBuffer commandBuffer, idunn_gpu_buffer_write_info *writeInfo) -> void;
 
   private:
+    auto freeResources() -> void;
+
+    Gpu *gpu;
     VkBuffer buffer;
     VmaAllocation allocation;
     VmaAllocationInfo allocationInfo;
     VkMemoryPropertyFlags memoryFlags;
     VkImageUsageFlags usageFlags;
     VkDeviceAddress address;
-    VkDeviceSize size;
 #ifndef NDEBUG
     const char *debugName;
 #endif
@@ -79,21 +65,11 @@ struct Gpu {
   struct Pipeline {
     friend Gpu;
 
-    enum class WindingOrder : uint8_t {
-      ClockWise = 0,
-      CounterClockwise,
-    };
-
-    struct Desc {
-      WindingOrder windingOrder;
-      std::filesystem::path shader;
-      VkFormat colorAttachmentFormat;
-#ifndef NDEBUG
-      const char *debugName;
-#endif
-    };
+    explicit Pipeline(Gpu *gpu, idunn_gpu_pipeline_config *config);
+    ~Pipeline();
 
   private:
+    Gpu *gpu;
     VkPipeline pipeline;
     VkPipelineLayout layout;
   };
@@ -101,60 +77,23 @@ struct Gpu {
   struct Sampler {
     friend Gpu;
 
-    enum class AddressMode : uint8_t {
-      Repeat = 0,
-      MirroredRepeat,
-      ClampToEdge,
-      ClampToBorder,
-      MirrorClampToEdge,
-    };
-
-    struct Desc {
-      AddressMode addressMode = AddressMode::Repeat;
-#ifndef NDEBUG
-      const char *debugName;
-#endif
-    };
+    explicit Sampler(Gpu *gpu, idunn_gpu_sampler_config *config);
+    ~Sampler();
 
   private:
+    Gpu *gpu;
     VkSampler sampler;
   };
 
   struct Texture {
     friend Gpu;
 
-    enum class Usage : uint8_t {
-      Color2D = 0,
-      TextCurves,
-      TextBands,
-    };
-
-    struct Desc {
-      Usage usage;
-      uint32_t width;
-      uint32_t height;
-      uint32_t depth = 1;
-#ifndef NDEBUG
-      const char *debugName;
-#endif
-    };
-
-    struct Region {
-      uint32_t width;
-      uint32_t height;
-      uint32_t depth = 1;
-      int32_t offsetX = 0;
-      int32_t offsetY = 0;
-      int32_t offsetZ = 0;
-    };
-
-    struct Write {
-      std::vector<Region> regions;
-      void *data;
-      size_t dataSize;
-    };
+    explicit Texture(Gpu *gpu, idunn_gpu_texture_config *config);
+    ~Texture();
+    auto write(VkCommandBuffer commandBuffer, idunn_gpu_texture_write_info *writeInfo) -> void;
 
   private:
+    Gpu *gpu;
     VkImage image;
     VkImageType imageType;
     VkImageView imageView;
@@ -174,13 +113,16 @@ struct Gpu {
   struct Surface {
     friend Gpu;
 
-    struct Desc {
-      SDL_Window *window;
-      uint32_t width;
-      uint32_t height;
-    };
+    explicit Surface(Gpu *gpu, idunn_gpu_surface_config *config);
+    ~Surface();
+
+    auto render(idunn_gpu_render_info *renderInfo, uint32_t width, uint32_t height, float clearColor) -> void;
 
   private:
+    auto initSwapchain(uint32_t width, uint32_t height) -> void;
+    auto cleanupSwapchainResources() -> void;
+
+    Gpu *gpu;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkExtent2D extent;
@@ -197,74 +139,22 @@ struct Gpu {
     VkFence fence;
   };
 
+  struct PushConstants {
+    float proj[16];
+    uint64_t instanceBuffer;
+    uint64_t transformBuffer;
+    uint64_t vertexBuffer;
+  };
+
   struct Draw {
     uint32_t transformIdx;
     uint32_t meshIdx;
   };
 
-  using Mesh = idunn_gpu_mesh;
-
-  struct World {
-    friend Gpu;
-
-    using Desc = idunn_gpu_world_config;
-
-    struct PushConstants {
-      glm::mat4 proj;
-      uint64_t drawBuffer;
-      uint64_t transformBuffer;
-      uint64_t vertexBuffer;
-    };
-
-  private:
-    Handle<Buffer> vertexBuffer;
-    Handle<Buffer> indexBuffer;
-    Handle<Buffer> indirectBuffer;
-    Handle<Buffer> transformBuffer;
-    Handle<Buffer> drawBuffer;
-    Handle<Pipeline> pipeline;
-    std::vector<idunn_gpu_mesh> meshes;
-    std::vector<Draw> draws;
-    uint32_t vertexSize;
-    uint32_t indexSize;
-    uint32_t vertexCount;
-    uint32_t indexCount;
-    float (**transformData)[16];
-    float (*currentTransformData)[16];
-  };
-
   explicit Gpu(idunn_gpu_config *config);
   ~Gpu();
-
-  auto create(Buffer::Desc &description) -> Handle<Buffer>;
-  auto create(Buffer &buffer, size_t size) -> Handle<Buffer>;
-  auto write(Handle<Buffer> handle, VkCommandBuffer commandBuffer, const std::vector<Buffer::Write> &writeInfos, bool append = false) -> void;
-  auto destroy(Handle<Buffer> buffer) -> void;
-  auto destroy(Buffer &buffer) -> void;
-
-  auto create(Pipeline::Desc &description) -> Handle<Pipeline>;
-  auto destroy(Handle<Pipeline> pipeline) -> void;
-  auto destroy(Pipeline &pipeline) -> void;
-
-  auto create(Sampler::Desc &description) -> Handle<Sampler>;
-  auto destroy(Handle<Sampler> sampler) -> void;
-  auto destroy(Sampler &sampler) -> void;
-
-  auto create(Texture::Desc &description) -> Handle<Texture>;
-  auto write(Handle<Texture> handle, VkCommandBuffer commandBuffer, const Texture::Write &writeInfo) -> void;
-  auto destroy(Handle<Texture> texture) -> void;
-  auto destroy(Texture &texture) -> void;
-
-  auto create(World::Desc *description) -> Handle<World>;
-  auto destroy(Handle<World> world) -> void;
-  auto destroy(World &world) -> void;
-  auto uploadMeshes(Handle<World> world, idunn_gpu_mesh_upload *uploadInfo) -> void;
-
-  auto create(Surface::Desc &description) -> Handle<Surface>;
-  auto destroy(Handle<Surface> surface) -> void;
-  auto destroy(Surface &surface) -> void;
-
-  auto render(Handle<Surface> surfaceHandle, Handle<World> worldHandle, glm::mat4 projection, uint32_t width, uint32_t height, float clearColor) -> void;
+  auto acquireCommandBuffer() -> VkCommandBuffer;
+  auto submitCommandBuffer(VkCommandBuffer commandBuffer) -> void;
 
 private:
   VkInstance instance;
@@ -281,14 +171,6 @@ private:
   std::vector<VkFence> frameFences;
   std::vector<VkCommandBuffer> frameCommandBuffers;
   uint32_t frameNumber = 0;
-  Pool<Buffer> buffers;
-  Pool<Pipeline> pipelines;
-  Pool<Sampler> samplers;
-  Pool<Surface> surfaces;
-  Pool<Texture> textures;
-  Pool<World> worlds;
-  Handle<Sampler> defaultSampler;
-  Handle<Texture> defaultTexture;
   std::vector<Task> tasks;
   Idunn::Flags<DescriptorSync> descriptorSync = DescriptorSync::None;
   Slang::ComPtr<slang::IGlobalSession> globalSlangSession;
@@ -306,14 +188,12 @@ private:
   auto selectPhysicalDevice(uint32_t apiVersion, const std::vector<const char *> &requiredExtensions) -> bool;
   auto initDevice(const std::vector<const char *> &layers, const std::vector<const char *> &extensions) -> bool;
   auto initSlangSession(const char *shadersPath) -> void;
-  auto initDescriptors() -> void;
-  auto syncDescriptors() -> void;
+  // auto initDescriptors() -> void;
+  // auto syncDescriptors() -> void;
   auto defer(std::packaged_task<void()> &&task) -> void;
   auto processReadyTasks() -> void;
   auto processAllTasks() -> void;
-  auto submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordCommands) const -> void;
-  auto initSwapchain(Surface &surface, uint32_t width, uint32_t height) -> void;
-  auto cleanupSwapchainResources(Surface &surface) -> void;
+  auto submit(std::function<void(VkCommandBuffer commandBuffer)> &&recordCommands) -> void;
 
 #ifndef NDEBUG
   static auto debugMessengerCallback(
