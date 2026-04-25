@@ -741,6 +741,7 @@ Gpu::Buffer::~Buffer() {
 auto Gpu::Buffer::resize(size_t capacity) -> void {
   LOG_DEBUG("Buffer");
 
+  LOG_ERROR("resize capacity: %i", capacity);
   VkBufferCreateInfo bufferCreateInfo = {};
   bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferCreateInfo.flags = 0;
@@ -787,18 +788,17 @@ auto Gpu::Buffer::resize(size_t capacity) -> void {
 
 auto Gpu::Buffer::write(VkCommandBuffer commandBuffer, idunn_gpu_buffer_write_info *writeInfo) -> void {
   size_t totalWriteSize = writeInfo->size;
-  size_t totalSize = allocationInfo.size + totalWriteSize;
+  auto writeOffset = writeInfo->append ? usedCapacity : 0;
+  size_t totalUsed = usedCapacity + totalWriteSize;
 
-  auto writeOffset = writeInfo->append ? allocationInfo.size : 0;
+  LOG_ERROR("totalSize: %i, totalWriteSize: %i", totalUsed, totalWriteSize);
 
-  LOG_ERROR("totalSize: %i, totalWriteSize: %i", totalWriteSize);
-
-  if (totalSize > allocationInfo.size) {
-    LOG_ERROR("ICI");
+  if (totalUsed > allocationInfo.size) {
+    LOG_ERROR("total: %i, allocation: %i", totalUsed, allocationInfo.size);
     auto *oldBuffer = buffer;
-    auto oldSize = allocationInfo.size;
+    auto oldSize = usedCapacity;
     freeResources();
-    resize(std::max(allocationInfo.size * 2, totalSize));
+    resize(std::max(allocationInfo.size * 2, totalUsed));
     VkBufferCopy copyRegion = {};
     copyRegion.srcOffset = 0;
     copyRegion.dstOffset = 0;
@@ -892,7 +892,7 @@ auto Gpu::Buffer::write(VkCommandBuffer commandBuffer, idunn_gpu_buffer_write_in
     VkBufferCopy bufferCopy = {};
     bufferCopy.srcOffset = 0;
     bufferCopy.dstOffset = writeOffset;
-    bufferCopy.size = totalSize;
+    bufferCopy.size = totalWriteSize;
 
     vkCmdCopyBuffer(commandBuffer, stagingBuffer, buffer, 1, &bufferCopy);
 
@@ -920,6 +920,8 @@ auto Gpu::Buffer::write(VkCommandBuffer commandBuffer, idunn_gpu_buffer_write_in
 
     // TODO: destroy staging buffer
   }
+
+  usedCapacity = totalUsed;
 }
 
 auto Gpu::Buffer::freeResources() -> void {
@@ -1731,18 +1733,26 @@ auto Gpu::Surface::render(idunn_gpu_render_info *renderInfo, uint32_t width, uin
   auto *transformBuffer = static_cast<Buffer *>(renderInfo->transformBuffer);
   auto *pipeline = static_cast<Pipeline *>(renderInfo->pipeline);
 
+  auto hardcoded = glm::perspective(glm::radians(60.0F), static_cast<float>(width) / static_cast<float>(height), 0.1F, 10.0F);
+  hardcoded *= glm::lookAt(glm::vec3(0.0F, 0.0F, 5.0F), glm::vec3(0.0F, 0.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+
   PushConstants pushConstants = {};
   pushConstants.instanceBuffer = instanceBuffer->address;
   pushConstants.transformBuffer = transformBuffer->address;
   pushConstants.vertexBuffer = vertexBuffer->address;
-  std::memcpy(pushConstants.proj, renderInfo->projection, sizeof(float) * 16);
+  std::memcpy(pushConstants.proj, glm::value_ptr(hardcoded), sizeof(float) * 16);
+  // std::memcpy(pushConstants.proj, renderInfo->projection, sizeof(float) * 16);
   pushConstants.proj[5] *= -1;
+
+  // LOG_ERROR("renderInfo->instanceCount: %i", renderInfo->instanceCount);
 
   vkCmdBindIndexBuffer(commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
   // vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &descriptorSet, 0, nullptr);
   vkCmdPushConstants(commandBuffer, pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushConstants);
   vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer->buffer, 0, renderInfo->instanceCount, sizeof(VkDrawIndexedIndirectCommand));
+
+  static_assert(sizeof(VkDrawIndexedIndirectCommand) == sizeof(idunn_gpu_draw), "idunn_gpu_draw should reflect VkDrawIndexedIndirectCommand");
 
   vkCmdEndRendering(commandBuffer);
 

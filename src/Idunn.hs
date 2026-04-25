@@ -36,14 +36,16 @@ module Idunn
     module Reflex.Network,
     -- module Reflex.Time,
     IsPhysicsSystem (..),
+    MonadECS (..),
     -- Transform (..),
     -- pattern Static,
     -- pattern Dynamic,
     -- pattern Kinematic,
     -- Shape (defaultSettings),
     -- ShapeSettings (..),
+    module Apecs,
     Mesh (..),
-    MonadWorld (..),
+    -- MonadWorld (..),
     -- spawnNode,
     RequestExit (..),
     MonadAudio (..),
@@ -51,23 +53,29 @@ module Idunn
     -- Vertex,
     App,
     run,
+    HasWorld (..),
     mkAppSettings,
     setAppName,
     setAppVersion,
-    DeltaTime (..),
+    -- DeltaTime (..),
   )
 where
 
 import Apecs hiding (Map, ask, asks)
+import Apecs.Experimental.Children
+import Control.Concurrent.Async (cancelMany)
 import Control.Monad (forM, forM_, unless, void, when)
 import Control.Monad.Fix (MonadFix, fix)
 import Control.Monad.Reader
 import Control.Monad.Ref (MonadRef (..))
-import Control.Monad.Trans.Resource (InternalState, MonadResource (..), getInternalState, runInternalState)
+import Control.Monad.Trans.Resource (getInternalState, runInternalState)
+import Data.Coerce (coerce)
+import Data.Dependent.Map qualified as DMap
 import Data.Dependent.Sum
 import Data.Functor.Identity (Identity (..))
 import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
+import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes)
@@ -88,12 +96,48 @@ import Reflex hiding (Global)
 import Reflex qualified
 import Reflex.Host.Class
 import Reflex.Network
+import Reflex.Spider.Internal (RootTrigger, SpiderHost (..), SpiderHostFrame)
 import System.Clock
 import UnliftIO
 import UnliftIO.Resource
 
-newtype AppT world vertex env t m a = AppT
-  { unAppT :: ReaderT (AppEnv world vertex env t) m a
+data GameEvents' f = GameEvents
+  { postBuild :: f (),
+    deltaTime :: f Float
+  }
+
+type GameEvents t = GameEvents' (Event t)
+
+newtype Trigger t m a = Trigger {unTrigger :: Ref m (Maybe (EventTrigger t a))}
+
+type GameTriggers t m = GameEvents' (Trigger t m)
+
+type GameM world vertex t m = GameT world vertex t (TriggerEventT t (PostBuildT t (PerformEventT t m)))
+
+data GameEnv world vertex t = GameEnv
+  { platform :: Platform,
+    gpu :: Gpu,
+    graphics :: Graphics vertex,
+    world :: world,
+    events :: GameEvents t,
+    input :: EventSelector t Input,
+    exitRequested :: IORef Bool
+  }
+
+instance HasWorld (GameEnv world vertex t) world where
+  getWorld = (.world)
+
+instance (Monad m) => MonadGpu (GameT world vertex t m) where
+  getGpuM = GameT $ asks (.gpu)
+
+instance (Storable vertex, Typeable vertex, Monad m) => MonadGraphics vertex (GameT world vertex t m) where
+  getGraphicsM = GameT $ asks (.graphics)
+
+class MonadECS w m | m -> w where
+  runECS :: SystemT w m a -> m a
+
+newtype GameT world vertex (t :: Type) m a = GameT
+  { unGameT :: ReaderT (GameEnv world vertex t) m a
   }
   deriving newtype
     ( Applicative,
@@ -102,114 +146,87 @@ newtype AppT world vertex env t m a = AppT
       MonadFix,
       MonadIO,
       MonadHold t,
-      MonadRef,
       MonadReflexCreateTrigger t,
-      MonadReader (AppEnv world vertex env t),
+      MonadReader (GameEnv world vertex t),
       MonadSample t,
       MonadTrans,
       NotReady t,
-      -- PerformEvent t,
       PostBuild t,
       TriggerEvent t
     )
 
--- instance MonadTrans (AppT world vertex env t) where
---   lift :: (Monad m) => m a -> AppT world vertex env t m a
---   lift = AppT . lift . lift
+instance (Monad m, Reflex t, PerformEvent t m) => PerformEvent t (GameT world vertex t m) where
+  type Performable (GameT world vertex t m) = GameT world vertex t (Performable m)
 
-instance (Monad m, Monad (Performable m), PerformEvent t m, Reflex t) => PerformEvent t (AppT world vertex env t m) where
-  type Performable (AppT world vertex env t m) = SystemT world (Performable m)
-  {-# INLINEABLE performEvent_ #-}
-  performEvent_ event = do
-    world <- asks world
-    lift $ performEvent_ $ fmapCheap (runWith world) event
-  {-# INLINEABLE performEvent #-}
-  performEvent event = do
-    world <- asks world
-    lift $ performEvent $ fmapCheap (runWith world) event
+  {-# INLINE performEvent_ #-}
+  performEvent_ event = GameT $ do
+    env <- ask
+    lift $ performEvent_ $ fmapCheap (\act -> runReaderT (coerce act) env) event
+
+  {-# INLINE performEvent #-}
+  performEvent event = GameT $ do
+    env <- ask
+    lift $ performEvent $ fmapCheap (\act -> runReaderT (coerce act) env) event
+
+instance (Monad m) => MonadECS w (GameT w vertex t m) where
+  runECS f = do
+    world <- asks (.world)
+    runSystem f world
+
+instance (Adjustable t m) => Adjustable t (GameT world vertex t m) where
+  runWithReplace (GameT a) ev = GameT $ runWithReplace a (fmap unGameT ev)
+  traverseIntMapWithKeyWithAdjust f dm0 dm' = GameT $ traverseIntMapWithKeyWithAdjust (\k v -> unGameT (f k v)) dm0 dm'
+  traverseDMapWithKeyWithAdjust f dm0 dm' = GameT $ traverseDMapWithKeyWithAdjust (\k v -> unGameT (f k v)) dm0 dm'
+  traverseDMapWithKeyWithAdjustWithMove f dm0 dm' = GameT $ traverseDMapWithKeyWithAdjustWithMove (\k v -> unGameT (f k v)) dm0 dm'
+
+runGameT :: GameT world vertex t m a -> GameEnv world vertex t -> m a
+runGameT (GameT game) gameEnv = runReaderT game gameEnv
 
 class RequestExit m where
   requestExit :: m ()
 
-instance (MonadIO m) => RequestExit (ReaderT (AppEnv world vertex t env) m) where
+-- instance (MonadIO m) => MonadAudio (ReaderT (AppEnv world vertex env t) m) where
+--   playAudio soundPath = do
+--     audioBackend <- asks audio
+--     liftIO $ playSound audioBackend soundPath
+
+instance (MonadIO m) => RequestExit (GameT world vertex t m) where
   requestExit = do
-    exitRequestedRef <- asks exitRequestedRef
+    exitRequestedRef <- asks (.exitRequested)
     writeIORef exitRequestedRef True
 
-instance (MonadIO m) => MonadAudio (ReaderT (AppEnv world vertex env t) m) where
-  playAudio soundPath = do
-    audioBackend <- asks audio
-    liftIO $ playSound audioBackend soundPath
+instance (Monad m) => MonadInput t (GameT world vertex t m) where
+  onScancode scancode = do
+    input <- asks (.input)
+    pure $ select input $ InputScancode scancode
+  onKey scancode = do
+    input <- asks (.input)
+    pure $ select input $ InputKey scancode
 
-data AppEnv world vertex env t = AppEnv
-  { platform :: Platform,
-    gpu :: Gpu,
-    graphics :: Graphics vertex,
-    audio :: Audio,
-    -- physics :: Physics,
-    -- state :: InternalState,
-    deltaTimeEvent :: Event t Float,
-    scancodeSubscriptions :: Subscriptions t Scancode Bool,
-    keySubscriptions :: Subscriptions t Key Bool,
-    world :: world,
-    exitRequestedRef :: IORef Bool,
-    env :: env
-  }
+setupInputSelector :: (MonadReflexCreateTrigger t m) => Platform -> IORef (DMap.DMap Input (EventTrigger t)) -> m (EventSelector t Input)
+setupInputSelector platform triggerMapRef = do
+  newFanEventWithTrigger $ \key trigger ->
+    case key of
+      InputScancode x -> do
+        print $ show ("subscribe to scancode" :: Text, x)
+        subscribeToScancode platform x
+        atomicModifyIORef' triggerMapRef $ \m -> (DMap.insert (InputScancode x) trigger m, ())
+        pure $ do
+          print $ show ("unsubscribe from scancode" :: Text, x)
+          unsubscribeFromScancode platform x
+          atomicModifyIORef' triggerMapRef $ \m -> (DMap.delete (InputScancode x) m, ())
+      InputKey x -> do
+        subscribeToKey platform x
+        atomicModifyIORef' triggerMapRef $ \m -> (DMap.insert (InputKey x) trigger m, ())
+        pure $ do
+          unsubscribeFromKey platform x
+          atomicModifyIORef' triggerMapRef $ \m -> (DMap.delete (InputKey x) m, ())
 
-instance HasGraphics vertex (AppEnv world vertex env t) where
-  getGraphics = (.graphics)
+-- class (Reflex t, Monad m) => DeltaTime t m | m -> t where
+--   getDeltaTime :: m (Event t Float)
 
-instance HasGpu (AppEnv world vertex env t) where
-  getGpu = (.gpu)
-
-type Subscriptions t subject value = IORef (Map subject (IntMap (EventTrigger t (InputValue subject))))
-
-instance (Reflex t, ReflexHost t) => MonadInput t (AppM world vertex env t m) Scancode where
-  subscribe = subscribeImpl scancodeSubscriptions subscribeToScancode unsubscribeFromScancode
-
-instance (Reflex t, ReflexHost t) => MonadInput t (AppM world vertex env t m) Key where
-  subscribe = subscribeImpl keySubscriptions subscribeToKey unsubscribeFromKey
-
-subscribeImpl :: (ReflexHost t, Ord subject) => (AppEnv world vertex env t -> Subscriptions t subject value) -> (Platform -> subject -> IO ()) -> (Platform -> subject -> IO ()) -> subject -> AppM world vertex env t m (Event t (InputValue subject))
-subscribeImpl getSubscriptions doSubscribe doUnsubscribe subject = do
-  platform <- asks platform
-  subscriptions <- asks getSubscriptions
-  newEventWithTrigger $ \eventTrigger -> do
-    uniq <- newUnique
-    let subscription = hashUnique uniq
-    shouldSubscribe <- atomicModifyIORef' subscriptions $ \currentSubscriptions ->
-      case Map.lookup subject currentSubscriptions of
-        Just triggerMap -> (Map.insert subject (IntMap.insert subscription eventTrigger triggerMap) currentSubscriptions, False)
-        Nothing -> (Map.insert subject (IntMap.singleton subscription eventTrigger) currentSubscriptions, True)
-    when shouldSubscribe $ doSubscribe platform subject
-    pure $ do
-      shouldUnsubscribe <- atomicModifyIORef' subscriptions $ \currentSubscriptions -> do
-        let triggerMap = Map.findWithDefault IntMap.empty subject currentSubscriptions
-            newTriggerMap = IntMap.delete subscription triggerMap
-         in if IntMap.null newTriggerMap
-              then (Map.delete subject currentSubscriptions, True)
-              else (Map.insert subject newTriggerMap currentSubscriptions, False)
-      when shouldUnsubscribe $ doUnsubscribe platform subject
-
-class (Reflex t, Monad m) => DeltaTime t m | m -> t where
-  getDeltaTime :: m (Event t Float)
-
-instance (Reflex t, Monad m) => DeltaTime t (AppT world vertex env t m) where
-  getDeltaTime = asks deltaTimeEvent
-
-instance (Adjustable t m) => Adjustable t (AppT world vertex env t m) where
-  runWithReplace (AppT a) ev = AppT $ runWithReplace a (fmap unAppT ev)
-  traverseIntMapWithKeyWithAdjust f dm0 dm' = AppT $ traverseIntMapWithKeyWithAdjust (\k v -> unAppT (f k v)) dm0 dm'
-  traverseDMapWithKeyWithAdjust f dm0 dm' = AppT $ traverseDMapWithKeyWithAdjust (\k v -> unAppT (f k v)) dm0 dm'
-  traverseDMapWithKeyWithAdjustWithMove f dm0 dm' = AppT $ traverseDMapWithKeyWithAdjustWithMove (\k v -> unAppT (f k v)) dm0 dm'
-
--- instance (MonadIO m) => MonadResource (AppT world vertex env t m) where
---   liftResourceT m = do
---     env <- AppT ask
---     liftIO $ runInternalState m env.state
-
-runAppT :: AppT world vertex env t m a -> AppEnv world vertex env t -> m a
-runAppT (AppT app) env = runReaderT app env
+-- instance (Reflex t, Monad m) => DeltaTime t (AppT world vertex env t m) where
+--   getDeltaTime = asks deltaTimeEvent
 
 data AppSettings = AppSettings
   { appName :: Text,
@@ -235,144 +252,161 @@ type App world vertex env t m =
     PerformEvent t m,
     Adjustable t m,
     MonadHold t m,
-    DeltaTime t m,
     PostBuild t m,
     TriggerEvent t m,
-    MonadInput t m Key,
-    MonadInput t m Scancode,
-    -- MonadWorld Mat4x4 m,
-    Performable m ~ SystemT world (Performable (PerformEventT t m)),
-    -- MonadReader env (Performable m),
-    -- HasGraphics vertex (Performable m),
-    -- MonadAudio (Performable m),
-    -- RequestExit (Performable m),
+    MonadInput t m,
+    MonadECS world m,
+    MonadECS world (Performable m),
+    MonadGpu (Performable m),
+    MonadGraphics vertex (Performable m),
+    RequestExit m,
+    RequestExit (Performable m),
     MonadIO (Performable m)
   )
 
-type AppM world vertex env t m = AppT world vertex env t (TriggerEventT t (PostBuildT t (PerformEventT t m)))
+class HasWorld env world where
+  getWorld :: env -> world
+
+newtype InitT vertex m a = InitT
+  { unInitT :: ReaderT (InitEnv vertex) m a
+  }
+  deriving newtype
+    ( Applicative,
+      Functor,
+      Monad,
+      MonadReader (InitEnv vertex),
+      MonadIO
+    )
+
+instance (Monad m) => MonadGpu (InitT vertex m) where
+  getGpuM = InitT $ asks (.gpu)
+
+runInitT :: InitT vertex m a -> InitEnv vertex -> m a
+runInitT (InitT x) env = runReaderT x env
 
 data InitEnv vertex = InitEnv
   { gpu :: Gpu,
     graphics :: Graphics vertex
   }
 
-instance HasGraphics vertex (InitEnv vertex) where
-  getGraphics = (.graphics)
+instance (Storable vertex, Monad m, Typeable vertex) => MonadGraphics vertex (InitT vertex m) where
+  getGraphicsM = asks (.graphics)
 
-instance HasGpu (InitEnv vertex) where
-  getGpu = (.gpu)
+instance MonadUnliftIO (SpiderHost Reflex.Global) where
+  {-# INLINE withRunInIO #-}
+  withRunInIO inner = SpiderHost $ inner runSpiderHost
 
 run ::
-  forall vertex world env t m.
+  forall vertex world env t (m :: * -> *).
   ( t ~ SpiderTimeline Reflex.Global,
     m ~ SpiderHost Reflex.Global,
-    Has world (ReaderT (AppEnv world vertex env t) (ResourceT IO)) (Mesh vertex),
-    Has world (ReaderT (AppEnv world vertex env t) (ResourceT IO)) WorldTransform
-    -- Has world m (Mesh vertex)
+    Has world (SpiderHost Reflex.Global) (Mesh vertex),
+    Has world (SpiderHost Reflex.Global) WorldTransform,
+    Has world (SpiderHost Reflex.Global) WorldTransformUpdated,
+    Has world (SpiderHost Reflex.Global) (Child RelativeTransform)
   ) =>
-  ReaderT (InitEnv vertex) IO world ->
+  InitT vertex m world ->
   AppSettings ->
   env ->
-  AppM world vertex env t m () ->
+  GameM world vertex t m () ->
   IO ()
 run mkWorld settings env game = runResourceT $ do
   platform <- initPlatform
-  gpu <- initGpu settings.appName settings.appVersion
-  graphics :: Graphics vertex <- initGraphics gpu
   (window, windowPtr) <- initWindow platform settings.appName 800 600
   (width, height) <- readIORef window.dimensions
+
+  gpu <- initGpu settings.appName settings.appVersion
+  graphics :: Graphics vertex <- initGraphics gpu
   surface <- initSurface gpu windowPtr width height
+
   audio <- initAudio
 
-  let initEnv =
-        InitEnv
-          { gpu = gpu,
-            graphics = graphics
-          }
+  liftIO $ runSpiderHost $ do
+    (ePostBuild, triggerPostBuild) <- newEventWithTriggerRef
+    (eDeltaTime, triggerDeltaTime) <- newEventWithTriggerRef
 
-  world <- liftIO $ flip runReaderT initEnv $ do
-    world <- mkWorld
-    pure world
+    let initEnv =
+          InitEnv
+            { gpu = gpu,
+              graphics = graphics
+            }
 
-  asyncEvents <- newChan
+    world <- flip runInitT initEnv $ do
+      world <- mkWorld
+      pure world
 
-  exitRequestedRef <- newIORef False
-  eventsRef <- newIORef mempty
-  keySubscriptions <- newIORef mempty
-  scancodeSubscriptions <- newIORef mempty
+    asyncEvents <- newChan
 
-  (fire, appEnv, trPostBuild, trDeltaTime) <- liftIO $ runSpiderHost $ do
-    (ePostBuild, trPostBuild) <- newEventWithTriggerRef
-    (eDeltaTime, trDeltaTime) <- newEventWithTriggerRef
+    let gameTriggers :: GameTriggers t m =
+          GameEvents
+            { postBuild = Trigger triggerPostBuild,
+              deltaTime = Trigger triggerDeltaTime
+            }
 
-    let appEnv =
-          AppEnv
+    inputRef :: IORef (DMap.DMap Input (EventTrigger t)) <- newIORef mempty
+    inputEvents <- setupInputSelector platform inputRef
+
+    exitRequestedRef <- newIORef False
+    eventsRef <- newIORef mempty
+
+    let gameEnv =
+          GameEnv
             { platform = platform,
               gpu = gpu,
               graphics = graphics,
-              audio = audio,
               world = world,
-              deltaTimeEvent = eDeltaTime,
-              keySubscriptions = keySubscriptions,
-              scancodeSubscriptions = scancodeSubscriptions,
-              exitRequestedRef = exitRequestedRef,
-              env = env
+              exitRequested = exitRequestedRef,
+              input = inputEvents,
+              events =
+                GameEvents
+                  { postBuild = ePostBuild,
+                    deltaTime = eDeltaTime
+                  }
             }
 
-    (_, FireCommand fire) <-
-      hostPerformEventT $
-        flip runPostBuildT ePostBuild $
-          flip runTriggerEventT asyncEvents $
-            runAppT game appEnv
+    physicsThread <- async $ runWith world $ fix $ \loop -> do
+      loop
 
-    pure (fire, appEnv, trPostBuild, trDeltaTime)
-
-  asyncTrigger <- liftIO $ async $ fix $ \loop -> do
-    triggerRefs <- readChan asyncEvents
-    mes <- liftIO $ forM triggerRefs $ \(EventTriggerRef er :=> TriggerInvocation a _) -> do
-      me <- readIORef er
-      pure $ (\e -> e :=> Identity a) <$> me
-    void $ runSpiderHost $ fire (catMaybes mes) $ pure ()
-    forM_ triggerRefs $ \(_ :=> TriggerInvocation _ cb) -> cb
-    loop
-
-  startTime <- liftIO $ getTime Monotonic
-  liftIO $ addEvent eventsRef trPostBuild ()
-
-  flip runReaderT appEnv $ runWith world $ flip fix startTime $ \loop prevTime -> do
-    liftIO $ pumpEvents platform $ \case
-      PlatformEventKey key active -> do
-        subscriptions <- readIORef keySubscriptions
-        case Map.lookup key subscriptions of
-          Just triggers -> modifyIORef' eventsRef $ \events -> foldr (\eventTrigger -> (:) (eventTrigger :=> Identity active)) events triggers
-          Nothing -> pure ()
-      PlatformEventScancode scancode active -> do
-        subscriptions <- readIORef scancodeSubscriptions
-        case Map.lookup scancode subscriptions of
-          Just triggers -> modifyIORef' eventsRef $ \events -> foldr (\eventTrigger -> (:) (eventTrigger :=> Identity active)) events triggers
-          Nothing -> pure ()
-      PlatformEventQuit -> writeIORef exitRequestedRef True
-    exitRequested <- readIORef exitRequestedRef
-    unless exitRequested $ do
-      currentTime <- liftIO $ getTime Monotonic
-      let deltaTime :: Float = fromIntegral (toNanoSecs (diffTimeSpec currentTime prevTime)) / 1e9
-      liftIO $ addEvent eventsRef trDeltaTime deltaTime
-      pendingEvents <- readIORef eventsRef
-      writeIORef eventsRef mempty
-      liftIO $ runSpiderHost $ void $ fire pendingEvents $ pure () -- gameplay systems run
+    renderingThread <- async $ runWith world $ fix $ \loop -> do
+      propagateWorldTransformUpdates
       prepareRender gpu graphics
       render surface graphics identity width height
-      loop currentTime
+      loop
 
-    -- auto Window::render(Handle<Gpu::World> world) -> void {
-    --   auto projection = glm::perspective(glm::radians(60.0F), static_cast<float>(width) / static_cast<float>(height), 0.1F, 10.0F);
-    --   projection *= glm::lookAt(glm::vec3(0.0F, 0.0F, 5.0F), glm::vec3(0.0F, 0.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
-    --   gpu->render(surface, world, projection, width, height, 0);
-    -- }
+    (_, FireCommand fire) <- hostPerformEventT $ flip runPostBuildT ePostBuild $ flip runTriggerEventT asyncEvents $ runGameT game gameEnv
 
-    cancel asyncTrigger
+    asyncEventsThread <- liftIO $ async $ fix $ \loop -> do
+      triggerRefs <- readChan asyncEvents
+      mes <- liftIO $ forM triggerRefs $ \(EventTriggerRef er :=> TriggerInvocation a _) -> do
+        me <- readIORef er
+        pure $ (\e -> e :=> Identity a) <$> me
+      void $ runSpiderHost $ fire (catMaybes mes) $ pure ()
+      forM_ triggerRefs $ \(_ :=> TriggerInvocation _ cb) -> cb
+      loop
+
+    startTime <- liftIO $ getTime Monotonic
+    -- fireEventRef gameTriggers.postBuild.unTrigger ()
+    addEvent eventsRef gameTriggers.postBuild.unTrigger ()
+
+    flip fix startTime $ \loop prevTime -> do
+      input <- readIORef inputRef
+      liftIO $ pumpEvents platform (Proxy @t) exitRequestedRef input eventsRef
+      exitRequested <- readIORef exitRequestedRef
+      unless exitRequested $ do
+        currentTime <- liftIO $ getTime Monotonic
+        --   --   let deltaTime :: Float = fromIntegral (toNanoSecs (diffTimeSpec currentTime prevTime)) / 1e9
+        --   --   -- liftIO $ runSpiderHost $ addEvent eventsRef gameTriggers.deltaTime.unTrigger deltaTime
+        pendingEvents <- readIORef eventsRef
+        writeIORef eventsRef mempty
+        void $ fire pendingEvents $ pure () -- gameplay systems run
+        loop currentTime
+
+    cancel physicsThread
+    cancel renderingThread
+    cancel asyncEventsThread
   where
     -- addEvent :: (MonadRef m, MonadIO m) => IORef [DSum tag Identity] -> Ref m (Maybe (tag a)) -> a -> m ()
+    -- addEvent :: IORef [DSum tag Identity] -> IORef (Maybe (tag a)) -> a -> IO ()
     addEvent eventsRef trRef val =
       readRef trRef >>= \case
         Nothing -> pure ()

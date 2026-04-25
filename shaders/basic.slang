@@ -24,17 +24,17 @@ struct VertexOutput {
   // float3 color : COLOR;
 };
 
-Texture2D<float4> textures[];
-SamplerState samplers[];
+// Texture2D<float4> textures[];
+// SamplerState samplers[];
 // RWTexture2D<float4> images[];
 
-struct Draw {
-  uint transformId;
+struct Instance {
+  uint32_t transformIdx;
 };
 
 struct PushConstants {
   float4x4 proj;
-  uint64_t drawBuffer;
+  uint64_t instanceBuffer;
   uint64_t transformBuffer;
   uint64_t vertexBuffer;
 };
@@ -44,21 +44,46 @@ ConstantBuffer<PushConstants> pushConstants;
 
 // https://shader-slang.org/slang/user-guide/spirv-target-specific
 
+void printMat4(float4x4 M) {
+  printf("Row 0: %v4f\nRow 1: %v4f\nRow 2: %v4f\nRow 3: %v4f\n", M[0], M[1], M[2], M[3]);
+}
+
+void printVec3(float3 x) {
+  printf("X: %f, Y: %f, Z: %f", x.x, x.y, x.z);
+}
+
 [shader("vertex")] VertexOutput vertexMain(
     uint vertexID : SV_VulkanVertexID,
     uint instanceID : SV_InstanceID,
     uint baseInstance : SV_StartInstanceLocation) {
   VertexOutput output;
 
+  // printf("GPU VertexBuffer Address: 0x%llx\n", pushConstants.vertexBuffer);
+  // printf("GPU TransformBuffer Address: 0x%llx\n", pushConstants.transformBuffer);
+  // printf("GPU InstanceBuffer Address: 0x%llx\n", pushConstants.instanceBuffer);
+
   float4x4 *transforms = (float4x4 *)pushConstants.transformBuffer;
-  Draw *draws = (Draw *)pushConstants.drawBuffer;
+  Instance *instances = (Instance *)pushConstants.instanceBuffer;
   Vertex *vertices = (Vertex *)pushConstants.vertexBuffer;
 
   uint instanceIdx = instanceID + baseInstance;
   Vertex vertex = vertices[vertexID];
-  Draw draw = draws[instanceIdx];
-  float4x4 model = transforms[draw.transformId];
+  Instance instance = instances[instanceIdx];
+
+  // printf("\nIN VERTEX!!: %u", instance.transformIdx);
+
+  float4x4 model = transforms[instance.transformIdx];
+
+  // printf("\nVertexID: %i", vertexID);
+  // printMat4(model);
+  // printVec3(vertex.position.xyz);
+
+  // printf("\nINSTANCE: %i, TRANSLATION: %f, %f, %f", baseInstance, model[0][3], model[1][3], model[2][3]);
+  // printf("\nVertexID: %i, TRANSLATION: %v3f", vertexID, vertex.position.xyz);
+
   output.position = mul(pushConstants.proj, mul(model, float4(vertex.position, 1.0)));
+  // output.position = float4(vertex.position, 1.0);
+  // output.position = float4(1.0, 1.0, 1.0, 1.0);
   // printf("\nINSTANCE: %i, TRANSLATION: %f, %f, %f", baseInstance, model[0][3], model[1][3], model[2][3]);
   // printf("\nVertexID: %i, TRANSLATION: %v3f", vertexID, vertex.position.xyz);
 

@@ -14,215 +14,216 @@
  You should have received a copy of the GNU Affero General Public License
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE UndecidableSuperClasses #-}
+-- {-# LANGUAGE AllowAmbiguousTypes #-}
+-- {-# LANGUAGE DataKinds #-}
+-- {-# LANGUAGE FunctionalDependencies #-}
+-- {-# LANGUAGE GADTs #-}
+-- {-# LANGUAGE PolyKinds #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+-- {-# LANGUAGE TypeApplications #-}
+-- {-# LANGUAGE TypeFamilies #-}
+-- {-# LANGUAGE UndecidableInstances #-}
+-- {-# LANGUAGE UndecidableSuperClasses #-}
 
-module Idunn.Core
-  ( SystemRegistry (..),
-    IsSystemRegistry (..),
-    emptySystemRegistry,
-    ResourceRegistry (..),
-    Resource (..),
-    initializeAllResources,
-    getResource,
-    System (..),
-    Idunn,
-    initializeAllSystems,
-    runAllSystems,
-    getSystem,
-  )
-where
+module Idunn.Core where
 
-import Control.Monad.Reader
-import Data.Kind
-import Idunn.TypeLevel
-import UnliftIO (MonadIO, Typeable, liftIO)
-import UnliftIO.Resource (MonadResource)
+--   ( SystemRegistry (..),
+--     IsSystemRegistry (..),
+--     emptySystemRegistry,
+--     ResourceRegistry (..),
+--     Resource (..),
+--     initializeAllResources,
+--     getResource,
+--     System (..),
+--     Idunn,
+--     initializeAllSystems,
+--     runAllSystems,
+--     getSystem,
+--   )
+-- where
 
-newtype SystemRegistry systems = SystemRegistry (HList systems)
+-- import Control.Monad.Reader
+-- import Data.Kind
+-- import Idunn.TypeLevel
+-- import UnliftIO (MonadIO, Typeable, liftIO)
+-- import UnliftIO.Resource (MonadResource)
 
-data IsSystemRegistry resources = forall systems. (RunSystems resources systems systems) => IsSystemRegistry (SystemRegistry systems)
+-- newtype SystemRegistry systems = SystemRegistry (HList systems)
 
-emptySystemRegistry :: IsSystemRegistry resources
-emptySystemRegistry = IsSystemRegistry $ SystemRegistry HNil
+-- data IsSystemRegistry resources = forall systems. (RunSystems resources systems systems) => IsSystemRegistry (SystemRegistry systems)
 
-newtype ResourceRegistry resources = ResourceRegistry (HList resources)
+-- emptySystemRegistry :: IsSystemRegistry resources
+-- emptySystemRegistry = IsSystemRegistry $ SystemRegistry HNil
 
-type Idunn resources systems =
-  ( InitializeSystems (Nub (ExpandResources (CollectResources systems))) systems '[],
-    InitializeResources (Nub (ExpandResources (CollectResources systems))) '[],
-    RunSystems resources systems systems,
-    Nub (ExpandResources (CollectResources systems)) ~ resources,
-    All System systems
-  )
+-- newtype ResourceRegistry resources = ResourceRegistry (HList resources)
 
-class
-  ( All System (Dependencies system),
-    All Resource (Resources system),
-    Typeable system
-  ) =>
-  System system
-  where
-  type Resources system :: [Type]
-  type Resources system = '[]
+-- type Idunn resources systems =
+--   ( InitializeSystems (Nub (ExpandResources (CollectResources systems))) systems '[],
+--     InitializeResources (Nub (ExpandResources (CollectResources systems))) '[],
+--     RunSystems resources systems systems,
+--     Nub (ExpandResources (CollectResources systems)) ~ resources,
+--     All System systems
+--   )
 
-  type Dependencies system :: [Type]
-  type Dependencies system = '[]
+-- class
+--   ( All System (Dependencies system),
+--     All Resource (Resources system),
+--     Typeable system
+--   ) =>
+--   System system
+--   where
+--   type Resources system :: [Type]
+--   type Resources system = '[]
 
-  initializeSystem ::
-    forall (resources :: [Type]) (initialized :: [Type]) env m.
-    ( IsSubset (Dependencies system) initialized,
-      IsSubset (Resources system) resources,
-      MonadResource m,
-      MonadReader env m,
-      HasSystems env initialized,
-      HasResources env resources
-    ) =>
-    m system
+--   type Dependencies system :: [Type]
+--   type Dependencies system = '[]
 
-  runSystem :: forall systems m env. (MonadIO m, MonadReader env m, HasSystems env systems) => m ()
+--   initializeSystem ::
+--     forall (resources :: [Type]) (initialized :: [Type]) env m.
+--     ( IsSubset (Dependencies system) initialized,
+--       IsSubset (Resources system) resources,
+--       MonadResource m,
+--       MonadReader env m,
+--       HasSystems env initialized,
+--       HasResources env resources
+--     ) =>
+--     m system
 
-initializeAllSystems ::
-  forall (systems :: [Type]) resources m.
-  ( MonadResource m,
-    resources ~ Nub (ExpandResources (CollectResources systems)),
-    InitializeSystems resources systems '[]
-  ) =>
-  ResourceRegistry resources -> m (SystemRegistry systems)
-initializeAllSystems resources = do
-  SystemRegistry <$> initializeSystems @resources @systems @'[] resources HNil
+--   runSystem :: forall systems m env. (MonadIO m, MonadReader env m, HasSystems env systems) => m ()
 
-class (All System remaining) => InitializeSystems (resources :: [Type]) (remaining :: [Type]) (initialized :: [Type]) where
-  initializeSystems :: (MonadResource m, MonadIO m) => ResourceRegistry resources -> HList initialized -> m (HList remaining)
+-- initializeAllSystems ::
+--   forall (systems :: [Type]) resources m.
+--   ( MonadResource m,
+--     resources ~ Nub (ExpandResources (CollectResources systems)),
+--     InitializeSystems resources systems '[]
+--   ) =>
+--   ResourceRegistry resources -> m (SystemRegistry systems)
+-- initializeAllSystems resources = do
+--   SystemRegistry <$> initializeSystems @resources @systems @'[] resources HNil
 
-instance InitializeSystems all '[] initialized where
-  initializeSystems _ _ = pure HNil
+-- class (All System remaining) => InitializeSystems (resources :: [Type]) (remaining :: [Type]) (initialized :: [Type]) where
+--   initializeSystems :: (MonadResource m, MonadIO m) => ResourceRegistry resources -> HList initialized -> m (HList remaining)
 
-instance
-  ( System system,
-    IsSubset (Dependencies system) initialized,
-    IsSubset (Resources system) resources,
-    InitializeSystems resources systems (system ': initialized)
-  ) =>
-  InitializeSystems resources (system ': systems) initialized
-  where
-  initializeSystems resources currentRegistry = do
-    liftIO $ putStrLn "initializeSystems"
-    let env = (resources, SystemRegistry @initialized currentRegistry)
-    system <- runReaderT (initializeSystem @system @resources @initialized) env
-    next <- initializeSystems @resources @systems @(system ': initialized) resources $ HCons system currentRegistry
-    pure $ HCons system next
+-- instance InitializeSystems all '[] initialized where
+--   initializeSystems _ _ = pure HNil
 
-class HasSystems env systems | env -> systems where
-  getSystems :: env -> SystemRegistry systems
+-- instance
+--   ( System system,
+--     IsSubset (Dependencies system) initialized,
+--     IsSubset (Resources system) resources,
+--     InitializeSystems resources systems (system ': initialized)
+--   ) =>
+--   InitializeSystems resources (system ': systems) initialized
+--   where
+--   initializeSystems resources currentRegistry = do
+--     liftIO $ putStrLn "initializeSystems"
+--     let env = (resources, SystemRegistry @initialized currentRegistry)
+--     system <- runReaderT (initializeSystem @system @resources @initialized) env
+--     next <- initializeSystems @resources @systems @(system ': initialized) resources $ HCons system currentRegistry
+--     pure $ HCons system next
 
-instance HasSystems (ResourceRegistry allSystems, SystemRegistry systems) systems where
-  getSystems = snd
+-- class HasSystems env systems | env -> systems where
+--   getSystems :: env -> SystemRegistry systems
 
-getSystem ::
-  forall system systems env m.
-  ( MonadReader env m,
-    HasSystems env systems,
-    Member system systems
-  ) =>
-  m system
-getSystem = do
-  SystemRegistry registry <- asks (getSystems @env)
-  pure $ getH @system registry
+-- instance HasSystems (ResourceRegistry allSystems, SystemRegistry systems) systems where
+--   getSystems = snd
 
-class (All Resource (DependsOn resource), Typeable resource) => Resource resource where
-  type DependsOn resource :: [Type]
-  type DependsOn resource = '[]
-  initializeResource :: (MonadResource m, MonadReader env m, HasResources env resources, IsSubset (DependsOn resource) resources) => m resource
+-- getSystem ::
+--   forall system systems env m.
+--   ( MonadReader env m,
+--     HasSystems env systems,
+--     Member system systems
+--   ) =>
+--   m system
+-- getSystem = do
+--   SystemRegistry registry <- asks (getSystems @env)
+--   pure $ getH @system registry
 
-type family CollectResources (systems :: [Type]) :: [Type] where
-  CollectResources '[] = '[]
-  CollectResources (x ': xs) = Append (Resources x) (CollectResources xs)
+-- class (All Resource (DependsOn resource), Typeable resource) => Resource resource where
+--   type DependsOn resource :: [Type]
+--   type DependsOn resource = '[]
+--   initializeResource :: (MonadResource m, MonadReader env m, HasResources env resources, IsSubset (DependsOn resource) resources) => m resource
 
-type family ExpandResources (rs :: [Type]) :: [Type] where
-  ExpandResources '[] = '[]
-  ExpandResources (r ': rs) = Append (ExpandResources (DependsOn r)) (r ': ExpandResources rs)
+-- type family CollectResources (systems :: [Type]) :: [Type] where
+--   CollectResources '[] = '[]
+--   CollectResources (x ': xs) = Append (Resources x) (CollectResources xs)
 
-initializeAllResources ::
-  forall systems resources m.
-  ( MonadResource m,
-    resources ~ Nub (ExpandResources (CollectResources systems)),
-    InitializeResources resources '[]
-  ) =>
-  m (ResourceRegistry resources)
-initializeAllResources = ResourceRegistry <$> initializeResources @(Nub (ExpandResources (CollectResources systems))) @'[] HNil
+-- type family ExpandResources (rs :: [Type]) :: [Type] where
+--   ExpandResources '[] = '[]
+--   ExpandResources (r ': rs) = Append (ExpandResources (DependsOn r)) (r ': ExpandResources rs)
 
-class InitializeResources (remaining :: [Type]) (initialized :: [Type]) where
-  initializeResources :: (MonadResource m) => HList initialized -> m (HList remaining)
+-- initializeAllResources ::
+--   forall systems resources m.
+--   ( MonadResource m,
+--     resources ~ Nub (ExpandResources (CollectResources systems)),
+--     InitializeResources resources '[]
+--   ) =>
+--   m (ResourceRegistry resources)
+-- initializeAllResources = ResourceRegistry <$> initializeResources @(Nub (ExpandResources (CollectResources systems))) @'[] HNil
 
-instance InitializeResources '[] initialized where
-  initializeResources _ = pure HNil
+-- class InitializeResources (remaining :: [Type]) (initialized :: [Type]) where
+--   initializeResources :: (MonadResource m) => HList initialized -> m (HList remaining)
 
-instance
-  ( Resource resource,
-    IsSubset (DependsOn resource) initialized,
-    InitializeResources remaining (resource ': initialized)
-  ) =>
-  InitializeResources (resource ': remaining) initialized
-  where
-  initializeResources currentRegistry = do
-    res <- runReaderT (initializeResource @resource) $ ResourceRegistry currentRegistry
-    next <- initializeResources @remaining @(resource ': initialized) $ HCons res currentRegistry
-    pure $ HCons res next
+-- instance InitializeResources '[] initialized where
+--   initializeResources _ = pure HNil
 
-class HasResources env resources | env -> resources where
-  getResources :: env -> ResourceRegistry resources
+-- instance
+--   ( Resource resource,
+--     IsSubset (DependsOn resource) initialized,
+--     InitializeResources remaining (resource ': initialized)
+--   ) =>
+--   InitializeResources (resource ': remaining) initialized
+--   where
+--   initializeResources currentRegistry = do
+--     res <- runReaderT (initializeResource @resource) $ ResourceRegistry currentRegistry
+--     next <- initializeResources @remaining @(resource ': initialized) $ HCons res currentRegistry
+--     pure $ HCons res next
 
-instance HasResources (ResourceRegistry resources) resources where
-  getResources = id
+-- class HasResources env resources | env -> resources where
+--   getResources :: env -> ResourceRegistry resources
 
-instance HasResources (ResourceRegistry resources, SystemRegistry systems) resources where
-  getResources = fst
+-- instance HasResources (ResourceRegistry resources) resources where
+--   getResources = id
 
-getResource ::
-  forall resource resources env m.
-  ( MonadReader env m,
-    HasResources env resources,
-    Member resource resources
-  ) =>
-  m resource
-getResource = do
-  ResourceRegistry registry <- asks (getResources @env)
-  pure $ getH @resource registry
+-- instance HasResources (ResourceRegistry resources, SystemRegistry systems) resources where
+--   getResources = fst
 
-runAllSystems :: forall resources m. (MonadIO m) => ResourceRegistry resources -> IsSystemRegistry resources -> m ()
-runAllSystems resources (IsSystemRegistry (registry :: SystemRegistry systems)) = runSystems @resources @systems @systems resources registry
+-- getResource ::
+--   forall resource resources env m.
+--   ( MonadReader env m,
+--     HasResources env resources,
+--     Member resource resources
+--   ) =>
+--   m resource
+-- getResource = do
+--   ResourceRegistry registry <- asks (getResources @env)
+--   pure $ getH @resource registry
 
-class RunSystems (resources :: [Type]) (remaining :: [Type]) (all :: [Type]) where
-  runSystems :: (MonadIO m) => ResourceRegistry resources -> SystemRegistry all -> m ()
+-- runAllSystems :: forall resources m. (MonadIO m) => ResourceRegistry resources -> IsSystemRegistry resources -> m ()
+-- runAllSystems resources (IsSystemRegistry (registry :: SystemRegistry systems)) = runSystems @resources @systems @systems resources registry
 
-instance RunSystems resources '[] all where
-  runSystems _ _ = pure ()
+-- class RunSystems (resources :: [Type]) (remaining :: [Type]) (all :: [Type]) where
+--   runSystems :: (MonadIO m) => ResourceRegistry resources -> SystemRegistry all -> m ()
 
-instance (System system, RunSystems resources systems all, Member system all) => RunSystems resources (system ': systems) all where
-  runSystems resources registry = do
-    -- On exécute le système actuel en lui fournissant le registre complet pour ses getSystem
-    -- On utilise runReaderT pour satisfaire la contrainte MonadReader de runSystem
-    runReaderT (runSystem @system @all) (resources, registry)
+-- instance RunSystems resources '[] all where
+--   runSystems _ _ = pure ()
 
-    -- On passe à la suite
-    runSystems @resources @systems @all resources registry
+-- instance (System system, RunSystems resources systems all, Member system all) => RunSystems resources (system ': systems) all where
+--   runSystems resources registry = do
+--     -- On exécute le système actuel en lui fournissant le registre complet pour ses getSystem
+--     -- On utilise runReaderT pour satisfaire la contrainte MonadReader de runSystem
+--     runReaderT (runSystem @system @all) (resources, registry)
 
--- class RunSystems (remaining :: [Type]) (all :: [Type]) where
---   runSystems :: forall m env. (MonadIO m, MonadReader env m, HasSystems env all) => m ()
+--     -- On passe à la suite
+--     runSystems @resources @systems @all resources registry
 
--- instance RunSystems '[] all where
---   runSystems = pure ()
+-- -- class RunSystems (remaining :: [Type]) (all :: [Type]) where
+-- --   runSystems :: forall m env. (MonadIO m, MonadReader env m, HasSystems env all) => m ()
 
--- instance (System system, RunSystems systems all) => RunSystems (system ': systems) all where
---   runSystems = do
---     runSystem @system @all
---     runSystems @systems @all
+-- -- instance RunSystems '[] all where
+-- --   runSystems = pure ()
+
+-- -- instance (System system, RunSystems systems all) => RunSystems (system ': systems) all where
+-- --   runSystems = do
+-- --     runSystem @system @all
+-- --     runSystems @systems @all

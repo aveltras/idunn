@@ -14,17 +14,20 @@
  You should have received a copy of the GNU Affero General Public License
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Idunn.Gpu
   ( Gpu,
     HasGpu (..),
+    MonadGpu (..),
     initGpu,
     Surface,
     initSurface,
     Graphics (..),
     HasGraphics (..),
+    MonadGraphics (..),
     initGraphics,
     Mesh (..),
     prepareRender,
@@ -35,7 +38,7 @@ where
 import Apecs (Map)
 import Apecs.Core
 import Apecs.Experimental.Reactive
-import Control.Monad (forM_, void)
+import Control.Monad (forM_, void, when)
 import Control.Monad.Reader
 import Data.IntMap.Strict
 import Data.IntSet (IntSet)
@@ -46,6 +49,7 @@ import Data.Text hiding (length, show)
 import Data.Text.Foreign qualified as T
 import Data.Vector.Storable qualified as VS
 import Data.Void
+import Debug.Trace (traceShowId)
 import Foreign hiding (void)
 import Foreign.C
 import Foreign.C.ConstPtr
@@ -64,9 +68,6 @@ newtype Gpu = Gpu {ptr :: Ptr Void}
 
 newtype Command s = Command {ptr :: Ptr Void}
 
-class HasGpu env where
-  getGpu :: env -> Gpu
-
 newtype Surface = Surface {ptr :: Ptr Void}
 
 newtype Buffer (item :: Type) = Buffer {ptr :: Ptr Void}
@@ -76,6 +77,25 @@ newtype Pipeline = Pipeline {ptr :: Ptr Void}
 newtype Sampler = Sampler {ptr :: Ptr Void}
 
 newtype Texture = Texture {ptr :: Ptr Void}
+
+class MonadGpu m where
+  getGpuM :: m Gpu
+
+class HasGpu env where
+  getGpu :: env -> Gpu
+
+-- instance (MonadReader env m, HasGpu env) => MonadGpu m where
+--   getGpuM = asks getGpu
+
+class (Monad m, Storable vertex, Typeable vertex) => MonadGraphics vertex m | m -> vertex where
+  getGraphicsM :: m (Graphics vertex)
+
+class HasGraphics vertex env where
+  getGraphics :: env -> Graphics vertex
+
+-- instance (MonadGraphics m) => MonadGraphics (SystemT w m) where
+--   type GraphicsVertex (SystemT w m) = GraphicsVertex m
+--   getGraphicsM = lift getGraphicsM
 
 initGpu :: (MonadResource m) => Text -> Word32 -> m Gpu
 initGpu appName appVersion = snd <$> allocate up down
@@ -116,46 +136,51 @@ data MeshLocation = MeshLocation
 
 prepareRender :: forall vertex w m. (MonadIO m, Has w m (Mesh vertex), Has w m WorldTransform) => Gpu -> Graphics vertex -> SystemT w m ()
 prepareRender gpu graphics = do
-  transforms :: SparseVector WorldTransform <- getStore
-  meshReferences <- readIORef graphics.meshReferences
-  loadedMeshes <- readIORef graphics.loadedMeshes
-  clearPinned graphics.draws
-  clearPinned graphics.meshInstances
-  forM_ (Map.toList meshReferences) $ \(mesh, entities) -> do
-    case Map.lookup mesh loadedMeshes of
-      Nothing -> pure ()
-      Just meshLocation -> do
-        void $
-          appendPinned graphics.draws $
-            Idunn_gpu_draw
-              { idunn_gpu_draw_indexCount = meshLocation.indexCount,
-                idunn_gpu_draw_instanceCount = fromIntegral $ IntSet.size entities,
-                idunn_gpu_draw_firstIndex = meshLocation.indexOffset,
-                idunn_gpu_draw_vertexOffset = meshLocation.vertexOffset,
-                idunn_gpu_draw_firstInstance = 0
-              }
-        forM_ (IntSet.elems entities) $ \entity -> do
-          transformIdx <- readPinned transforms.sparse entity
+  shouldSync <- readIORef graphics.shouldSync
+  when shouldSync $ do
+    writeIORef graphics.shouldSync False
+    transforms :: SparseVector WorldTransform <- getStore
+    meshReferences <- readIORef graphics.meshReferences
+    loadedMeshes <- readIORef graphics.loadedMeshes
+    clearPinned graphics.draws
+    clearPinned graphics.meshInstances
+    forM_ (Map.toList meshReferences) $ \(mesh, entities) -> do
+      case Map.lookup mesh loadedMeshes of
+        Nothing -> pure ()
+        Just meshLocation -> do
           void $
-            appendPinned graphics.meshInstances $
-              Idunn_gpu_mesh_instance
-                { idunn_gpu_mesh_instance_transformIdx = fromIntegral transformIdx
-                }
+            appendPinned graphics.draws $
+              traceShowId $
+                Idunn_gpu_draw
+                  { idunn_gpu_draw_indexCount = meshLocation.indexCount,
+                    idunn_gpu_draw_instanceCount = fromIntegral $ IntSet.size entities,
+                    idunn_gpu_draw_firstIndex = meshLocation.indexOffset,
+                    idunn_gpu_draw_vertexOffset = meshLocation.vertexOffset,
+                    idunn_gpu_draw_firstInstance = 0
+                  }
+          -- TODO: handle missing transform
+          forM_ (IntSet.elems entities) $ \entity -> do
+            transformIdx <- readPinned transforms.sparse entity
+            void $
+              appendPinned graphics.meshInstances $
+                Idunn_gpu_mesh_instance
+                  { idunn_gpu_mesh_instance_transformIdx = transformIdx
+                  }
 
-  liftIO $ submitCommands gpu $ \command -> do
-    drawsSize <- liftIO $ peek graphics.draws.size
-    drawBuffer <- readIORef graphics.draws.bufferRef
-    putStrLn "draws size:"
-    print drawsSize
-    writeBuffer graphics.indirectBuffer command (getRawPtr drawBuffer) (fromIntegral drawsSize) False
-    instancesSize <- liftIO $ peek graphics.meshInstances.size
-    instanceBuffer <- readIORef graphics.meshInstances.bufferRef
-    putStrLn "instance size:"
-    print instancesSize
-    writeBuffer graphics.instanceBuffer command (getRawPtr instanceBuffer) (fromIntegral instancesSize) False
-
-class HasGraphics vertex env where
-  getGraphics :: env -> Graphics vertex
+    liftIO $ submitCommands gpu $ \command -> do
+      transformBuffer <- readIORef transforms.dense.bufferRef
+      transformSize <- liftIO $ peek transforms.dense.size
+      writeBuffer graphics.transformBuffer command (getRawPtr transformBuffer) (transformSize * transforms.dense.itemSize) False
+      drawsSize <- liftIO $ peek graphics.draws.size
+      drawBuffer <- readIORef graphics.draws.bufferRef
+      putStrLn "draws size:"
+      print drawsSize
+      writeBuffer graphics.indirectBuffer command (getRawPtr drawBuffer) (drawsSize * graphics.draws.itemSize) False
+      instancesSize <- liftIO $ peek graphics.meshInstances.size
+      instanceBuffer <- readIORef graphics.meshInstances.bufferRef
+      putStrLn "instance size:"
+      print instancesSize
+      writeBuffer graphics.instanceBuffer command (getRawPtr instanceBuffer) (instancesSize * graphics.meshInstances.itemSize) False
 
 data Graphics (vertex :: Type) = Graphics
   { vertexBuffer :: Buffer vertex,
@@ -167,9 +192,10 @@ data Graphics (vertex :: Type) = Graphics
     transformBuffer :: Buffer Mat4x4,
     loadedMeshes :: IORef (Map.Map (Mesh vertex) MeshLocation),
     meshReferences :: IORef (Map.Map (Mesh vertex) IntSet),
-    draws :: PinnedVector' Idunn_gpu_draw,
-    meshInstances :: PinnedVector' Idunn_gpu_mesh_instance,
-    mainPipeline :: Pipeline
+    draws :: PinnedVector Idunn_gpu_draw,
+    meshInstances :: PinnedVector Idunn_gpu_mesh_instance,
+    mainPipeline :: Pipeline,
+    shouldSync :: IORef Bool
   }
 
 -- #ifndef NDEBUG
@@ -180,11 +206,6 @@ data Graphics (vertex :: Type) = Graphics
 --   drawBufferDesc.debugName = "Draw Buffer";
 --   pipelineDesc.debugName = "Pipeline";
 -- #endif
-
--- Pipeline::Desc pipelineDesc = {};
--- pipelineDesc.shader = "basic";
--- pipelineDesc.colorAttachmentFormat = VK_FORMAT_B8G8R8A8_SRGB;
--- pipelineDesc.windingOrder = Pipeline::WindingOrder::CounterClockwise;
 
 initGraphics :: (MonadResource m) => Gpu -> m (Graphics vertex)
 initGraphics gpu = do
@@ -200,6 +221,7 @@ initGraphics gpu = do
   meshReferences <- newIORef mempty
   draws <- newPinned 10
   meshInstances <- newPinned 10
+  shouldSync <- newIORef True
   pure
     Graphics
       { vertexBuffer = vertexBuffer,
@@ -213,12 +235,14 @@ initGraphics gpu = do
         meshReferences = meshReferences,
         mainPipeline = mainPipeline,
         draws = draws,
-        meshInstances = meshInstances
+        meshInstances = meshInstances,
+        shouldSync = shouldSync
       }
 
 render :: (MonadIO m) => Surface -> Graphics vertex -> Mat4x4 -> Word32 -> Word32 -> m ()
 render surface graphics projection width height = liftIO $ do
   alloca $ \pInfo -> do
+    meshCount <- peek graphics.draws.size
     poke pInfo $
       Idunn_gpu_render_info
         { idunn_gpu_render_info_indexBuffer = graphics.indexBuffer.ptr,
@@ -228,37 +252,37 @@ render surface graphics projection width height = liftIO $ do
           idunn_gpu_render_info_instanceBuffer = graphics.instanceBuffer.ptr,
           idunn_gpu_render_info_projection = toConstantArray projection,
           idunn_gpu_render_info_pipeline = graphics.mainPipeline.ptr,
-          idunn_gpu_render_info_instanceCount = 0
+          idunn_gpu_render_info_instanceCount = fromIntegral meshCount
         }
     idunn_gpu_surface_render surface.ptr pInfo
 
-uploadMesh :: (MonadUnliftIO m, Storable vertex) => Gpu -> Graphics vertex -> Mesh vertex -> m ()
-uploadMesh gpu graphics meshDescription = do
+uploadMesh :: forall vertex m. (MonadIO m, Storable vertex) => Gpu -> Graphics vertex -> Mesh vertex -> m ()
+uploadMesh gpu graphics mesh = do
   loadedMeshes <- readIORef graphics.loadedMeshes
-  case Map.lookup meshDescription loadedMeshes of
-    Just meshLocation -> pure ()
+  case Map.lookup mesh loadedMeshes of
+    Just _meshLocation -> pure ()
     Nothing -> do
-      (indices, vertices) <- resolveMeshData meshDescription
       indexOffset <- readIORef graphics.indexCount
       vertexOffset <- readIORef graphics.vertexCount
       let meshLocation =
             MeshLocation
               { indexOffset = indexOffset,
-                indexCount = fromIntegral $ VS.length indices,
+                indexCount = fromIntegral $ VS.length mesh.indices,
                 vertexOffset = fromIntegral vertexOffset,
-                vertexCount = fromIntegral $ VS.length vertices
+                vertexCount = fromIntegral $ VS.length mesh.vertices
               }
       writeIORef graphics.indexCount $ indexOffset + meshLocation.indexCount
       writeIORef graphics.vertexCount $ vertexOffset + meshLocation.vertexCount
-      writeIORef graphics.loadedMeshes $ Map.insert meshDescription meshLocation loadedMeshes
+      writeIORef graphics.loadedMeshes $ Map.insert mesh meshLocation loadedMeshes
 
-      withRunInIO $ \runInIO -> do
+      liftIO $ withRunInIO $ \runInIO -> do
         submitCommands gpu $ \command -> do
-          VS.unsafeWith indices $ \pIndices -> runInIO $ writeBuffer graphics.indexBuffer command pIndices meshLocation.indexCount True
-          VS.unsafeWith vertices $ \pVertices -> runInIO $ writeBuffer graphics.vertexBuffer command pVertices meshLocation.vertexCount True
+          putStrLn "SUBMIT VERTICES & INDICES"
+          print $ ("indexWriteSize", fromIntegral (sizeOf @Word32 undefined) * fromIntegral meshLocation.indexCount)
+          VS.unsafeWith mesh.indices $ \pIndices -> runInIO $ writeBuffer graphics.indexBuffer command pIndices (fromIntegral (sizeOf @Word32 undefined) * fromIntegral meshLocation.indexCount) True
+          VS.unsafeWith mesh.vertices $ \pVertices -> runInIO $ writeBuffer graphics.vertexBuffer command pVertices (fromIntegral (sizeOf @vertex undefined) * fromIntegral meshLocation.vertexCount) True
 
-resolveMeshData :: (MonadIO m) => Mesh vertex -> m (VS.Vector Word32, VS.Vector vertex)
-resolveMeshData meshDescription = error "todo: resolveMeshData"
+      writeIORef graphics.shouldSync True
 
 submitCommands :: (MonadUnliftIO m) => Gpu -> (forall s. Command s -> m a) -> m a
 submitCommands gpu f = do
@@ -281,10 +305,11 @@ initBuffer gpu initialCapacity bufferUsage = snd <$> allocate up down
           idunn_gpu_buffer_init gpu.ptr pConfig pBuffer
           Buffer <$> peek pBuffer
 
-writeBuffer :: (MonadIO m) => Buffer item -> Command s -> Ptr item -> Word32 -> Bool -> m ()
-writeBuffer buffer command items itemCount doAppend = liftIO $ do
+writeBuffer :: (MonadIO m) => Buffer item -> Command s -> Ptr item -> CSize -> Bool -> m ()
+writeBuffer buffer command items writeSize doAppend = liftIO $ do
   alloca $ \pInfo -> do
-    poke pInfo $ Idunn_gpu_buffer_write_info (castPtr items) (fromIntegral itemCount) $ fromBool doAppend
+    print ("WRITE SIZE" :: String, writeSize)
+    poke pInfo $ Idunn_gpu_buffer_write_info (castPtr items) writeSize $ fromBool doAppend
     idunn_gpu_buffer_write buffer.ptr command.ptr pInfo
 
 initPipeline :: (MonadResource m) => Gpu -> Idunn_gpu_pipeline_winding_order -> m Pipeline
@@ -299,8 +324,18 @@ initPipeline gpu windingOrder = snd <$> allocate up down
             idunn_gpu_pipeline_init gpu.ptr pConfig pPipeline
             Pipeline <$> peek pPipeline
 
-data Mesh (vertex :: Type) = MeshBox Float
-  deriving stock (Eq, Ord)
+data Mesh (vertex :: Type) = Mesh
+  { key :: Int,
+    vertices :: VS.Vector vertex,
+    indices :: VS.Vector Word32
+  }
+  deriving stock (Typeable)
+
+instance Eq (Mesh vertex) where
+  (==) x y = x.key == y.key
+
+instance Ord (Mesh vertex) where
+  compare x y = compare x.key y.key
 
 instance Component (Mesh vertex) where
   type Storage (Mesh vertex) = Reactive (MeshLoader vertex) (Map (Mesh vertex))
@@ -309,21 +344,21 @@ data MeshLoader vertex = MeshLoader
 
 type instance Elem (MeshLoader vertex) = Mesh vertex
 
-instance (MonadUnliftIO m, MonadReader env m, HasGpu env, HasGraphics vertex env, Storable vertex) => Reacts m (MeshLoader vertex) where
+instance (MonadIO m, MonadGpu m, MonadGraphics vertex m) => Reacts m (MeshLoader vertex) where
   {-# INLINE rempty #-}
   rempty = do
-    graphics :: Graphics vertex <- asks getGraphics
+    graphics :: Graphics vertex <- getGraphicsM
     pure MeshLoader
   {-# INLINE react #-}
   react _ Nothing Nothing _ = pure ()
   react (Entity entity) oldMeshM newMeshM loader = do
-    graphics :: Graphics vertex <- asks getGraphics
+    graphics :: Graphics vertex <- getGraphicsM
     (meshToUnloadM, meshToLoadM) <- atomicModifyIORef' graphics.meshReferences updateReferences
     -- TODO: meshToUnloadM
     case meshToLoadM of
       Nothing -> pure ()
       Just meshToLoad -> do
-        gpu <- asks getGpu
+        gpu <- getGpuM
         uploadMesh gpu graphics meshToLoad
     where
       updateReferences refs =

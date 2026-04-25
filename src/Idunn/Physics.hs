@@ -26,7 +26,7 @@ module Idunn.Physics
     HasPhysics (..),
     MotionType,
     -- initPhysics,
-    initSystem,
+    -- initSystem,
     update,
     BodyID,
     pattern Static,
@@ -50,12 +50,12 @@ import Data.Void (Void)
 import Foreign
 import Foreign.C
 import HsBindgen.Runtime.Prelude hiding (Elem)
-import Idunn.Core qualified as Idunn
+-- import Idunn.Core qualified as Idunn
 import Idunn.Linear.Mat (Mat4x4)
 import Idunn.Linear.Vec
 import Idunn.Physics.FFI
 import Idunn.Vector
-import Idunn.World (World)
+-- import Idunn.World (World)
 import UnliftIO
 import UnliftIO.Resource
 
@@ -122,97 +122,97 @@ newtype BodyID s = BodyID
   deriving stock (Show)
   deriving newtype (Eq, Ord)
 
-initSystem ::
-  forall broadPhaseLayer objectLayer env m s.
-  ( IsPhysicsSystem broadPhaseLayer objectLayer,
-    HasPhysics env,
-    MonadReader env m,
-    MonadResource m
-  ) =>
-  Proxy broadPhaseLayer ->
-  Proxy objectLayer ->
-  PinnedVector Mat4x4 ->
-  m (System s broadPhaseLayer objectLayer)
-initSystem _ _ worldTransforms = do
-  physics <- asks getPhysics
-  (_, system) <- allocate (up physics worldTransforms) down
-  pure system
-  where
-    allBroadPhaseLayers :: [broadPhaseLayer] = [minBound .. maxBound]
-    allObjectLayers :: [objectLayer] = [minBound .. maxBound]
-    broadPhaseLayerCount = length allBroadPhaseLayers
-    broadPhaseLayerNames = [show l | l <- allBroadPhaseLayers]
-    objectLayerCount = length allObjectLayers
-    objToBroadMapping = [fromIntegral $ fromEnum @broadPhaseLayer (belongsTo l) | l <- allObjectLayers]
-    objectCollisions =
-      [ if l2 `member` shouldCollideObject (Proxy @broadPhaseLayer) l1 then 1 else 0
-      | l1 <- allObjectLayers,
-        l2 <- allObjectLayers
-      ]
-    broadCollisions =
-      [ if bl `member` shouldCollideBroad ol then 1 else 0
-      | ol <- allObjectLayers,
-        bl <- allBroadPhaseLayers
-      ]
+-- initSystem ::
+--   forall broadPhaseLayer objectLayer env m s.
+--   ( IsPhysicsSystem broadPhaseLayer objectLayer,
+--     HasPhysics env,
+--     MonadReader env m,
+--     MonadResource m
+--   ) =>
+--   Proxy broadPhaseLayer ->
+--   Proxy objectLayer ->
+--   PinnedVector Mat4x4 ->
+--   m (System s broadPhaseLayer objectLayer)
+-- initSystem _ _ worldTransforms = do
+--   physics <- asks getPhysics
+--   (_, system) <- allocate (up physics worldTransforms) down
+--   pure system
+--   where
+--     allBroadPhaseLayers :: [broadPhaseLayer] = [minBound .. maxBound]
+--     allObjectLayers :: [objectLayer] = [minBound .. maxBound]
+--     broadPhaseLayerCount = length allBroadPhaseLayers
+--     broadPhaseLayerNames = [show l | l <- allBroadPhaseLayers]
+--     objectLayerCount = length allObjectLayers
+--     objToBroadMapping = [fromIntegral $ fromEnum @broadPhaseLayer (belongsTo l) | l <- allObjectLayers]
+--     objectCollisions =
+--       [ if l2 `member` shouldCollideObject (Proxy @broadPhaseLayer) l1 then 1 else 0
+--       | l1 <- allObjectLayers,
+--         l2 <- allObjectLayers
+--       ]
+--     broadCollisions =
+--       [ if bl `member` shouldCollideBroad ol then 1 else 0
+--       | ol <- allObjectLayers,
+--         bl <- allBroadPhaseLayers
+--       ]
 
-    down system = do
-      putStrLn "drop physics"
-      freeHaskellFunPtr system.onContactAddedFn
-      idunn_physics_system_uninit system.ptr
-      free system.ptrActiveBodyCount
-      free system.ptrActiveBodyIdsPtr
+--     down system = do
+--       putStrLn "drop physics"
+--       freeHaskellFunPtr system.onContactAddedFn
+--       idunn_physics_system_uninit system.ptr
+--       free system.ptrActiveBodyCount
+--       free system.ptrActiveBodyIdsPtr
 
-    up physics transforms = alloca $ \ptrConfig -> do
-      ptrContactRemovedCount <- malloc
-      ptrContactRemoved <- malloc
-      contactAddedListeners <- newIORef mempty
-      ptrActiveBodyCount <- malloc
-      ptrActiveBodyIdsPtr <- malloc
-      onContactAddedFn <- toFunPtr $ Idunn_physics_on_contact_added_Aux $ \rawBodyID1 rawBodyID2 -> do
-        listeners <- readIORef contactAddedListeners
-        case Map.lookup (BodyID rawBodyID1) listeners of
-          Nothing -> pure ()
-          Just listener -> listener
-        case Map.lookup (BodyID rawBodyID2) listeners of
-          Nothing -> pure ()
-          Just listener -> listener
-      withMany withCString broadPhaseLayerNames $ \c'broadPhaseLayerNames ->
-        withArray c'broadPhaseLayerNames $ \ptrBroadPhaseLayerNames ->
-          withArray objToBroadMapping $ \ptrObjToBroad ->
-            withArray objectCollisions $ \ptrObjectCollisions ->
-              withArray broadCollisions $ \ptrBroadCollisions -> do
-                poke ptrConfig $
-                  Idunn_physics_system_config
-                    { idunn_physics_system_config_bodyMutexes = 0,
-                      idunn_physics_system_config_maxBodies = 1024,
-                      idunn_physics_system_config_maxBodyPairs = 1024,
-                      idunn_physics_system_config_maxContactConstraints = 1024,
-                      idunn_physics_system_config_broadPhaseLayerCount = fromIntegral broadPhaseLayerCount,
-                      idunn_physics_system_config_broadPhaseLayerNames = ptrBroadPhaseLayerNames,
-                      idunn_physics_system_config_objectLayerCount = fromIntegral objectLayerCount,
-                      idunn_physics_system_config_objectToBroadPhaseLayers = ptrObjToBroad,
-                      idunn_physics_system_config_objectCollisions = ptrObjectCollisions,
-                      idunn_physics_system_config_broadCollisions = ptrBroadCollisions,
-                      idunn_physics_system_config_pContactRemovedCount = ptrContactRemovedCount,
-                      idunn_physics_system_config_pContactRemoved = ptrContactRemoved,
-                      idunn_physics_system_config_onContactAdded = Idunn_physics_on_contact_added onContactAddedFn,
-                      idunn_physics_system_config_transformData = castPtr transforms.bufferPtr,
-                      idunn_physics_system_config_pActiveBodyCount = ptrActiveBodyCount,
-                      idunn_physics_system_config_ppActiveBodies = ptrActiveBodyIdsPtr
-                    }
-                alloca $ \ptrSystem -> do
-                  idunn_physics_system_init physics.ptr ptrConfig ptrSystem
-                  system <- peek ptrSystem
-                  pure
-                    PhysicsSystem
-                      { ptr = system,
-                        ptrContactRemovedCount = ptrContactRemovedCount,
-                        ptrContactRemoved = ptrContactRemoved,
-                        ptrActiveBodyCount = ptrActiveBodyCount,
-                        ptrActiveBodyIdsPtr = ptrActiveBodyIdsPtr,
-                        contactAddedListeners = contactAddedListeners,
-                        onContactAddedFn = onContactAddedFn
-                      }
+--     up physics transforms = alloca $ \ptrConfig -> do
+--       ptrContactRemovedCount <- malloc
+--       ptrContactRemoved <- malloc
+--       contactAddedListeners <- newIORef mempty
+--       ptrActiveBodyCount <- malloc
+--       ptrActiveBodyIdsPtr <- malloc
+--       onContactAddedFn <- toFunPtr $ Idunn_physics_on_contact_added_Aux $ \rawBodyID1 rawBodyID2 -> do
+--         listeners <- readIORef contactAddedListeners
+--         case Map.lookup (BodyID rawBodyID1) listeners of
+--           Nothing -> pure ()
+--           Just listener -> listener
+--         case Map.lookup (BodyID rawBodyID2) listeners of
+--           Nothing -> pure ()
+--           Just listener -> listener
+--       withMany withCString broadPhaseLayerNames $ \c'broadPhaseLayerNames ->
+--         withArray c'broadPhaseLayerNames $ \ptrBroadPhaseLayerNames ->
+--           withArray objToBroadMapping $ \ptrObjToBroad ->
+--             withArray objectCollisions $ \ptrObjectCollisions ->
+--               withArray broadCollisions $ \ptrBroadCollisions -> do
+--                 poke ptrConfig $
+--                   Idunn_physics_system_config
+--                     { idunn_physics_system_config_bodyMutexes = 0,
+--                       idunn_physics_system_config_maxBodies = 1024,
+--                       idunn_physics_system_config_maxBodyPairs = 1024,
+--                       idunn_physics_system_config_maxContactConstraints = 1024,
+--                       idunn_physics_system_config_broadPhaseLayerCount = fromIntegral broadPhaseLayerCount,
+--                       idunn_physics_system_config_broadPhaseLayerNames = ptrBroadPhaseLayerNames,
+--                       idunn_physics_system_config_objectLayerCount = fromIntegral objectLayerCount,
+--                       idunn_physics_system_config_objectToBroadPhaseLayers = ptrObjToBroad,
+--                       idunn_physics_system_config_objectCollisions = ptrObjectCollisions,
+--                       idunn_physics_system_config_broadCollisions = ptrBroadCollisions,
+--                       idunn_physics_system_config_pContactRemovedCount = ptrContactRemovedCount,
+--                       idunn_physics_system_config_pContactRemoved = ptrContactRemoved,
+--                       idunn_physics_system_config_onContactAdded = Idunn_physics_on_contact_added onContactAddedFn,
+--                       idunn_physics_system_config_transformData = castPtr transforms.bufferPtr,
+--                       idunn_physics_system_config_pActiveBodyCount = ptrActiveBodyCount,
+--                       idunn_physics_system_config_ppActiveBodies = ptrActiveBodyIdsPtr
+--                     }
+--                 alloca $ \ptrSystem -> do
+--                   idunn_physics_system_init physics.ptr ptrConfig ptrSystem
+--                   system <- peek ptrSystem
+--                   pure
+--                     PhysicsSystem
+--                       { ptr = system,
+--                         ptrContactRemovedCount = ptrContactRemovedCount,
+--                         ptrContactRemoved = ptrContactRemoved,
+--                         ptrActiveBodyCount = ptrActiveBodyCount,
+--                         ptrActiveBodyIdsPtr = ptrActiveBodyIdsPtr,
+--                         contactAddedListeners = contactAddedListeners,
+--                         onContactAddedFn = onContactAddedFn
+--                       }
 
 update :: (MonadIO m) => System s broadPhaseLayer objectLayer -> (Int -> m ()) -> m ()
 update system f = do

@@ -57,6 +57,7 @@ struct Gpu {
     VkMemoryPropertyFlags memoryFlags;
     VkImageUsageFlags usageFlags;
     VkDeviceAddress address;
+    VkDeviceSize usedCapacity = 0;
 #ifndef NDEBUG
     const char *debugName;
 #endif
@@ -144,11 +145,6 @@ struct Gpu {
     uint64_t instanceBuffer;
     uint64_t transformBuffer;
     uint64_t vertexBuffer;
-  };
-
-  struct Draw {
-    uint32_t transformIdx;
-    uint32_t meshIdx;
   };
 
   explicit Gpu(idunn_gpu_config *config);

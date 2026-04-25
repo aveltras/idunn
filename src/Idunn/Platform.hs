@@ -20,7 +20,6 @@
 module Idunn.Platform
   ( Platform (..),
     initPlatform,
-    PlatformEvent (..),
     pumpEvents,
     subscribeToScancode,
     unsubscribeFromScancode,
@@ -30,11 +29,19 @@ module Idunn.Platform
 where
 
 import Control.Monad (unless)
+import Data.Dependent.Map (DMap)
+import Data.Dependent.Map qualified as DMap
+import Data.Dependent.Sum (DSum (..))
 import Data.Foldable (forM_)
+import Data.Functor.Identity (Identity (..))
+import Data.Proxy
 import Data.Void
 import Foreign
 import Foreign.C hiding (withCString)
+import Idunn.Input
 import Idunn.Platform.FFI
+import Reflex.Host.Class
+import UnliftIO
 import UnliftIO.Resource
 
 data Platform = Platform
@@ -68,13 +75,8 @@ initPlatform = snd <$> allocate up down
       free platform.ptrEventsPtr
       free platform.ptrDeltaTime
 
-data PlatformEvent
-  = PlatformEventKey Key Bool
-  | PlatformEventScancode Scancode Bool
-  | PlatformEventQuit
-
-pumpEvents :: Platform -> (PlatformEvent -> IO ()) -> IO ()
-pumpEvents platform f = do
+pumpEvents :: Platform -> Proxy t -> IORef Bool -> DMap Input (EventTrigger t) -> IORef [DSum (EventTrigger t) Identity] -> IO ()
+pumpEvents platform _ exitRequestedRef subscribers eventsRef = do
   idunn_platform_tick platform.ptr
   eventCount <- peek platform.ptrEventCount
   unless (eventCount == 0) $ do
@@ -84,11 +86,15 @@ pumpEvents platform f = do
       case idunn_platform_event_type event of
         KeyEvent -> do
           let keyEvent = get_idunn_platform_event_payload_key $ idunn_platform_event_payload event
-          f $ PlatformEventKey (idunn_platform_key_event_key keyEvent) $ toBool $ idunn_platform_key_event_value keyEvent
+          case DMap.lookup (InputKey $ idunn_platform_key_event_key keyEvent) subscribers of
+            Just trigger -> modifyIORef' eventsRef $ \pendingEvents -> (trigger :=> Identity (toBool $ idunn_platform_key_event_value keyEvent)) : pendingEvents
+            Nothing -> pure ()
         ScancodeEvent -> do
           let scancodeEvent = get_idunn_platform_event_payload_scancode $ idunn_platform_event_payload event
-          f $ PlatformEventScancode (idunn_platform_scancode_event_scancode scancodeEvent) $ toBool $ idunn_platform_scancode_event_value scancodeEvent
-        QuitEvent -> f PlatformEventQuit
+          case DMap.lookup (InputScancode $ idunn_platform_scancode_event_scancode scancodeEvent) subscribers of
+            Just trigger -> modifyIORef' eventsRef $ \pendingEvents -> (trigger :=> Identity (toBool $ idunn_platform_scancode_event_value scancodeEvent)) : pendingEvents
+            Nothing -> pure ()
+        QuitEvent -> writeIORef exitRequestedRef True
         _ -> pure ()
 
 subscribeToScancode :: Platform -> Scancode -> IO ()

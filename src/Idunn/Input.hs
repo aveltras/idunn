@@ -16,12 +16,14 @@
  along with this program. If not, see <http://www.gnu.org/licenses/>.
 -}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Idunn.Input
   ( Key,
     Scancode,
     MonadInput (..),
+    Input (..),
     InputValue,
     pattern KeyReturn,
     pattern KeyEscape,
@@ -528,8 +530,8 @@ module Idunn.Input
   )
 where
 
+import Data.GADT.Compare.TH
 import Data.Kind (Type)
-import Idunn.Platform
 import Idunn.Platform.FFI
 import Reflex
 
@@ -539,5 +541,13 @@ type instance InputValue Scancode = Bool
 
 type instance InputValue Key = Bool
 
-class (Reflex t) => MonadInput t m subject | m -> t where
-  subscribe :: subject -> m (Event t (InputValue subject))
+class MonadInput t m where
+  onScancode :: Scancode -> m (Event t Bool)
+  onKey :: Key -> m (Event t Bool)
+
+data Input a where
+  InputScancode :: Scancode -> Input Bool
+  InputKey :: Key -> Input Bool
+
+deriveGEq ''Input
+deriveGCompare ''Input

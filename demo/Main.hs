@@ -18,12 +18,15 @@
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# OPTIONS_GHC -ddump-splices #-}
+
+-- {-# OPTIONS_GHC -ddump-splices #-}
 
 module Main where
 
-import Apecs
+import Apecs hiding (asks)
+import Apecs.Experimental.Children
 import Control.Monad.IO.Class
+import Data.Data (Typeable)
 import Data.Function ((&))
 import Data.Functor ((<&>))
 import Data.Proxy
@@ -34,10 +37,20 @@ import Paths_idunn qualified as Cabal
 
 newtype Vertex = Vertex Vec3
   deriving newtype (Storable)
+  deriving stock (Typeable)
 
 type MyMesh = Mesh Vertex
 
-makeWorld "MyWorld" [''WorldTransform, ''MyMesh]
+type ChildTransform = Child RelativeTransform
+
+makeWorld
+  "MyWorld"
+  [ ''RelativeTransform,
+    ''WorldTransform,
+    ''ChildTransform,
+    ''WorldTransformUpdated,
+    ''MyMesh
+  ]
 
 data MyGame = MyGame
 
@@ -47,7 +60,7 @@ data MyGameState
 
 main :: IO ()
 main = do
-  run @Vertex initMyWorld settings MyGame game
+  run initMyWorld settings MyGame game
   where
     settings = mkAppSettings & setAppName "Demo"
 
@@ -55,14 +68,28 @@ game :: (App MyWorld Vertex MyGame t m) => m ()
 game = do
   -- withPhysics (Proxy @BroadPhaseLayer) (Proxy @ObjectLayer) $ \physicsSystem -> do
   ePostBuild <- getPostBuild
-  eDeltaTime <- getDeltaTime
+  -- eDeltaTime <- getDeltaTime
 
-  -- eEscape <- subscribe ScancodeEscape
-  -- performEvent_ $ ffor eEscape $ const requestExit
+  eEscape <- onScancode ScancodeEscape
+  performEvent_ $ ffor eEscape $ const requestExit
 
-  -- performEvent_ $ ffor ePostBuild $ const $ do
-  --   entity <- newEntity (MeshBox @Vertex 5)
-  --   pure ()
+  let indices = [0, 1, 2, 0, 2, 3]
+  let vertices =
+        [ Vertex $ mkVec3 (-1) (-1) 1,
+          Vertex $ mkVec3 1 (-1) 1,
+          Vertex $ mkVec3 1 1 1,
+          Vertex $ mkVec3 (-1) 1 1
+        ]
+
+  performEvent_ $ ffor ePostBuild $ const $ runECS $ do
+    -- entity' <- newEntity (WorldTransform $ translate identity $ mkVec3 0 1 0, Mesh 5 vertices indices)
+    parent <- newEntity (RelativeTransform $ translate identity $ mkVec3 0 1 0, Mesh 5 vertices indices)
+    -- parent' <- newEntity (WorldTransformUpdated, WorldTransform $ translate identity $ mkVec3 0 1 0, Mesh 5 vertices indices)
+    newEntity_ (RelativeTransform identity, Child parent $ RelativeTransform $ translate identity $ mkVec3 1 0 0, Mesh 5 vertices indices)
+    pure ()
+
+  -- where
+  --
 
   rec dynGameState <- holdDyn ScreenA eNextLevel
       eNextLevel <- switchHold never eeNextLevel
@@ -84,20 +111,6 @@ game = do
 
   -- floorID <- createBody physicsSystem (mkVec3 0 (-1) 0) Static NonMoving $ defaultSettings {halfExtentX = 100, halfExtentY = 1, halfExtentZ = 100}
   -- onContactAdded physicsSystem floorID $ logDebug "FLOOR CONTACT!"
-  -- root <-
-  --   newEntity
-  --     ( Transform Nothing identity,
-  --       GpuMesh vertices indices
-  --     )
-  -- rootNode3D <- get root
-
-  -- parent <-
-  --   newEntity
-  --     ( Transform (Just rootNode3D) $ translate identity $ mkVec3 0 1 0,
-  --       GpuMesh vertices indices
-  --     )
-
-  -- parentNode3D <- get parent
 
   -- createBody physicsSystem rootNode3D (mkVec3 0 1 0) Dynamic Moving $ defaultSettings {halfExtentX = 100, halfExtentY = 1, halfExtentZ = 100}
 
@@ -146,24 +159,13 @@ game = do
   -- pure $ ScreenB <$ ffilter id eKeyX
   pure ()
 
--- where
---   indices = [0, 1, 2, 0, 2, 3]
---   vertices =
---     [ Vertex $ mkVec3 (-1) (-1) 1,
---       Vertex $ mkVec3 1 (-1) 1,
---       Vertex $ mkVec3 1 1 1,
---       Vertex $ mkVec3 (-1) 1 1
---     ]
-
 screenA :: (App MyWorld Vertex MyGame t m) => m (Event t MyGameState)
 screenA = do
   ePostBuild <- getPostBuild
   performEvent_ $ ffor ePostBuild $ const $ logInfo "PART A"
-  -- root <- spawnNode Nothing identity
-  -- pure ()
 
-  eScancodeW <- subscribe ScancodeW
-  performEvent_ $ ffor (ffilter id eScancodeW) $ \_ -> logInfo "Scancode 'W' Pressed"
+  eScancodeW <- onScancode ScancodeW
+  performEvent_ $ ffor (ffilter id eScancodeW) $ \_ -> logInfo "Scancode 'W' Pressed in screenA"
 
   -- eKeyE <- subscribe KeyE
   -- performEvent_ $ ffor (ffilter id eKeyE) $ \_ -> do
@@ -171,14 +173,18 @@ screenA = do
   --   soundPath <- liftIO $ Cabal.getDataFileName "demo/assets/freesound_community-wind-6352.mp3"
   --   playAudio soundPath
 
-  eKeyX <- subscribe KeyX
+  eKeyX <- onKey KeyX
   pure $ ScreenB <$ ffilter id eKeyX
 
 screenB :: (App MyWorld Vertex MyGame t m) => m (Event t MyGameState)
 screenB = do
   ePostBuild <- getPostBuild
   performEvent_ $ ffor ePostBuild $ const $ logInfo "PART B"
-  eKeyX <- subscribe KeyX
+
+  eScancodeW <- onScancode ScancodeW
+  performEvent_ $ ffor (ffilter id eScancodeW) $ \_ -> logInfo "Scancode 'W' Pressed in screenB"
+
+  eKeyX <- onKey KeyX
   pure $ ScreenA <$ ffilter id eKeyX
 
 data Move
